@@ -35,10 +35,11 @@
   (reverse (cons str lst)))
 
 ;; ----------------------------------------------------------------
-;; FERRAMENTA 1: EXPORTAR TODOS OS ATRIBUTOS VISIVEIS PARA CSV
+;; FERRAMENTA 1: EXPORTAR ATRIBUTOS VISIVEIS PARA CSV
 ;; Arquivo: Desktop\todos_atributos.csv
 ;; Formato: HANDLE_CAD;Nome_Bloco;TAG1;TAG2;...
-;; Tambem preenche ID_VISIVEL e NOME_DO_BLOCO em cada bloco
+;; Exporta apenas blocos cujo nome comeca com "ATL_STW".
+;; Tambem preenche ID_VISIVEL e NOME_DO_BLOCO em cada bloco.
 ;; ----------------------------------------------------------------
 (defun c:ExportarTodos (/ desktop caminho ss i ent obj nomeReal hnd
                            listaAtribs nomeAtrib valorAtrib arq blocosDados
@@ -63,7 +64,8 @@
           (setq nomeReal (vlax-get-property obj 'EffectiveName)))
         (if (or (null nomeReal) (= nomeReal ""))
           (setq nomeReal (vlax-get-property obj 'Name)))
-        (if (= (vla-get-HasAttributes obj) :vlax-true)
+        (if (and (= (strcase (substr nomeReal 1 7)) "ATL_STW")
+                 (= (vla-get-HasAttributes obj) :vlax-true))
           (progn
             (setq listaAtribs
                   (vlax-safearray->list (vlax-variant-value (vla-GetAttributes obj)))
