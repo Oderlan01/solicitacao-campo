@@ -72,12 +72,11 @@
 ;; Retorna lista (total-tag-pai total-id-sync) para relatorio.
 ;; ================================================================
 (defun STW:atualizar-todos (/ ss i obj nomeReal hnd listaAtribs atrib
-                               nomeAtrib tagValor n blocosSync
+                               nomeAtrib tagValor n
                                totalTagPai totalIdSync)
   (setq ss          (ssget "X" '((0 . "INSERT")))
         totalTagPai 0
-        totalIdSync 0
-        blocosSync  '())
+        totalIdSync 0)
   (if (not ss)
     (progn (princ "\nNenhum bloco encontrado.") (list 0 0))
     (progn
@@ -86,18 +85,16 @@
       (while (< i (sslength ss))
         (setq obj      (vlax-ename->vla-object (ssname ss i))
               nomeReal (STW:nome-efetivo obj))
-        (if (and nomeReal (= (type nomeReal) 'STR) (/= (substr nomeReal 1 1) "*"))
+        (if (and nomeReal (= (type nomeReal) 'STR)
+                 (>= (strlen nomeReal) 7)
+                 (= (strcase (substr nomeReal 1 7)) "ATL_STW"))
           (progn
             (setq tagValor (STW:get-0e-tag obj))
             (if (and tagValor (= (type tagValor) 'STR) (/= tagValor "") (/= tagValor "-"))
               (progn
                 (setq n (STW:modificar-def nomeReal tagValor))
-                (setq totalTagPai (+ totalTagPai n))
-                (if (and (> n 0) (not (member nomeReal blocosSync)))
-                  (setq blocosSync (cons nomeReal blocosSync)))))))
+                (setq totalTagPai (+ totalTagPai n))))))
         (setq i (1+ i)))
-      (if blocosSync
-        (foreach blk blocosSync (STW:sync-bloco blk)))
 
       ;; --- Passo 2: sincroniza ID_VISIVEL e NOME_DO_BLOCO ---
       (setq i 0)
@@ -424,11 +421,6 @@
       (if (and blkEnt (> n 0)) (entupd blkEnt))))
   n)
 
-;; Chama ATTSYNC para sincronizar instancias com a definicao do bloco
-(defun STW:sync-bloco (blkname)
-  (command "_.ATTSYNC" "_N" blkname)
-  (princ (strcat "\n  ATTSYNC: " blkname)))
-
 
 ;; ================================================================
 ;; COMANDO 4: STWSelecionarPai
@@ -464,7 +456,6 @@
              (setq n (STW:modificar-def nomeReal tagValor))
              (if (> n 0)
                (progn
-                 (STW:sync-bloco nomeReal)
                  (setq hnd        (vla-get-Handle obj)
                        listaAtribs (vlax-safearray->list
                                      (vlax-variant-value (vla-GetAttributes obj))))
