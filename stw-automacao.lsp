@@ -144,56 +144,119 @@
 
 
 ;; ================================================================
+;; HELPER: STW:atribs-visiveis
+;;
+;; Coleta atributos visiveis de um INSERT (modelo ou definicao de bloco).
+;; Usa o flag DXF 70 (bit 0 = invisivel) — mais confiavel que VLA Invisible.
+;; Exclui automaticamente ID_VISIVEL e NOME_DO_BLOCO (atributos internos).
+;;
+;; Retorna:  cons (novas-tags . lista-de-pares-tag-valor)
+;;   novas-tags : tags ainda nao presentes em listaTags (para agregar)
+;;   lista-pares: lista de (tag . valor) dos atributos coletados
+;; ================================================================
+(defun STW:atribs-visiveis (insEnt listaTags / subEnt sd flags tag val result novas)
+  (setq subEnt (entnext insEnt)
+        result nil
+        novas  nil)
+  (while (and subEnt
+              (setq sd (entget subEnt))
+              (= (cdr (assoc 0 sd)) "ATTRIB"))
+    (setq flags (cdr (assoc 70 sd))
+          tag   (cdr (assoc 2  sd))
+          val   (cdr (assoc 1  sd)))
+    ;; bit 0 do flag 70 = invisivel; 0 = visivel
+    (if (and (zerop (logand (if flags flags 0) 1))
+             (not (member (strcase tag) '("ID_VISIVEL" "NOME_DO_BLOCO"))))
+      (progn
+        (if (and (not (member tag listaTags))
+                 (not (member tag novas)))
+          (setq novas (cons tag novas)))
+        (setq result (cons (cons tag val) result))))
+    (setq subEnt (entnext subEnt)))
+  (cons novas result))
+
+
+;; ================================================================
 ;; COMANDO 2: STWExportar
+;;
 ;; Atualiza todos os atributos e exporta para CSV.
 ;; Arquivo: Desktop\todos_atributos.csv
 ;; Formato: HANDLE_CAD;Nome_Bloco;TAG1;TAG2;...  (tags em ordem alfabetica)
+;;
+;; Correcoes aplicadas:
+;;   [1] Visibilidade via flag DXF 70 (bit 0), nao VLA Invisible
+;;   [2] ID_VISIVEL e NOME_DO_BLOCO excluidos das colunas de atributo
+;;   [3] Blocos ATL_STW aninhados na definicao do bloco pai tambem
+;;       sao exportados como linhas proprias (com seu proprio HANDLE)
 ;; ================================================================
 (defun c:STWExportar (/ caminho ss i ent obj nomeReal hnd
-                        listaAtribs nomeAtrib valorAtrib arq
                         blocosDados listaTags cabecalho linhaTexto
-                        busca parAtribs)
+                        busca ret parAtribs filhoAttribs
+                        blkRec defEnt defData nomeFilho hndFilho arq)
   (princ "\nAtualizando tags antes de exportar...")
   (STW:atualizar-todos)
 
-  (setq caminho (strcat (STW:desktop) "\\todos_atributos.csv"))
-  (setq ss (ssget "X" '((0 . "INSERT"))))
+  (setq caminho     (strcat (STW:desktop) "\\todos_atributos.csv")
+        ss          (ssget "X" '((0 . "INSERT")))
+        blocosDados nil
+        listaTags   nil
+        i           0)
+
   (if (not ss)
     (princ "\nNenhum bloco encontrado.")
     (progn
-      (setq blocosDados nil listaTags nil i 0)
       (while (< i (sslength ss))
         (setq ent      (ssname ss i)
               obj      (vlax-ename->vla-object ent)
-              hnd      (vla-get-Handle obj)
-              nomeReal (STW:nome-efetivo obj))
-        (if (and nomeReal (= (type nomeReal) 'STR)
-                 (= (strcase (substr nomeReal 1 7)) "ATL_STW")
-                 (= (vla-get-HasAttributes obj) :vlax-true))
+              nomeReal (STW:nome-efetivo obj)
+              hnd      (vla-get-Handle obj))
+
+        (if (and nomeReal
+                 (= (type nomeReal) 'STR)
+                 (>= (strlen nomeReal) 7)
+                 (= (strcase (substr nomeReal 1 7)) "ATL_STW"))
           (progn
-            (setq listaAtribs
-                  (vlax-safearray->list (vlax-variant-value (vla-GetAttributes obj)))
-                  parAtribs nil)
-            (foreach atrib listaAtribs
-              (if (= (vla-get-Invisible atrib) :vlax-false)
-                (progn
-                  (setq nomeAtrib  (vla-get-TagString atrib)
-                        valorAtrib (vla-get-TextString atrib))
-                  (if (not (member nomeAtrib listaTags))
-                    (setq listaTags (cons nomeAtrib listaTags)))
-                  (setq parAtribs (cons (cons nomeAtrib valorAtrib) parAtribs)))))
-            (setq blocosDados (cons (list hnd nomeReal parAtribs) blocosDados))))
+            ;; --- [1][2] Atributos do bloco PAI (visiveis, sem internos) ---
+            (setq ret       (STW:atribs-visiveis ent listaTags)
+                  listaTags (append listaTags (car ret))
+                  parAtribs (cdr ret))
+            (setq blocosDados (cons (list hnd nomeReal parAtribs) blocosDados))
+
+            ;; --- [3] Blocos FILHO aninhados na definicao do bloco pai ---
+            (setq blkRec (tblsearch "BLOCK" nomeReal))
+            (if blkRec
+              (progn
+                (setq defEnt (cdr (assoc -2 blkRec)))
+                (while defEnt
+                  (setq defData (entget defEnt))
+                  (if (= (cdr (assoc 0 defData)) "INSERT")
+                    (progn
+                      (setq nomeFilho (cdr (assoc 2 defData))
+                            hndFilho  (cdr (assoc 5 defData)))
+                      (if (and nomeFilho hndFilho
+                               (>= (strlen nomeFilho) 7)
+                               (= (strcase (substr nomeFilho 1 7)) "ATL_STW"))
+                        (progn
+                          (setq ret         (STW:atribs-visiveis defEnt listaTags)
+                                listaTags   (append listaTags (car ret))
+                                filhoAttribs (cdr ret))
+                          (setq blocosDados
+                                (cons (list hndFilho nomeFilho filhoAttribs)
+                                      blocosDados))))))
+                  (setq defEnt (entnext defEnt)))))))
         (setq i (1+ i)))
-      (setq listaTags (acad_strlsort listaTags))
-      (setq arq (open caminho "w"))
-      (setq cabecalho "HANDLE_CAD;Nome_Bloco")
+
+      ;; --- Escrever CSV ---
+      (setq listaTags (acad_strlsort listaTags)
+            arq       (open caminho "w")
+            cabecalho "HANDLE_CAD;Nome_Bloco")
       (foreach tag listaTags
         (setq cabecalho (strcat cabecalho ";" tag)))
       (write-line cabecalho arq)
       (foreach blk blocosDados
-        (setq hnd       (car blk)
-              nomeReal  (cadr blk)
-              parAtribs (caddr blk)
+        (setq hnd        (car   blk)
+              nomeReal   (cadr  blk)
+              parAtribs  (caddr blk)
               linhaTexto (strcat hnd ";" nomeReal))
         (foreach tag listaTags
           (setq busca (assoc tag parAtribs))
