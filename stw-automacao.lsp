@@ -291,7 +291,7 @@
 (defun STW:salvar-prefixo (subDados prefixo)
   (regapp "STW_TAG")
   ; Remove -3 existente e adiciona novo com o prefixo
-  (setq subDados (vl-remove-if (lambda (x) (= (car x) -3)) subDados))
+  (setq subDados (vl-remove-if (function (lambda (x) (= (car x) -3))) subDados))
   (append subDados (list (list -3 (list "STW_TAG" (cons 1000 prefixo))))))
 
 ;; Retorna o valor do atributo 0E_TAG de um VLA INSERT no modelo
