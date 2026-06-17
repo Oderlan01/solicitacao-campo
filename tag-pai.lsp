@@ -41,17 +41,22 @@
   val)
 
 ;; ----------------------------------------------------------------
-;; HELPER: escreve valor em todos os atributos 0E_TAG de um VLA INSERT
-;;         dentro de uma definicao de bloco (entidade aninhada).
+;; HELPER: concatena o valor ATUAL do 0E_TAG do filho com o valor
+;;         do 0E_TAG do pai e grava o resultado.
+;;         Resultado: <valor_atual_filho> + <valor_pai>
 ;;         Retorna quantidade alterada.
 ;; ----------------------------------------------------------------
-(defun TAG-PAI:set-0e-tag-def (entDef valor / atribs n)
+(defun TAG-PAI:set-0e-tag-def (entDef valorPai / atribs n valorAtual)
   (setq atribs (vlax-invoke entDef 'GetAttributes)
         n 0)
   (foreach att atribs
     (if (= (strcase (vla-get-TagString att)) "0E_TAG")
       (progn
-        (vla-put-TextString att valor)
+        (setq valorAtual (vla-get-TextString att))
+        ;; Concatena apenas se o valor atual nao contem ja o valorPai
+        ;; para evitar duplicacao em execucoes repetidas
+        (if (= (vl-string-search valorPai valorAtual) nil)
+          (vla-put-TextString att (strcat valorAtual valorPai)))
         (setq n (1+ n)))))
   n)
 
