@@ -67,7 +67,7 @@
 ;; ================================================================
 (defun STW:atualizar-todos (/ ss i obj nomeReal hnd listaAtribs atrib
                                nomeAtrib tagValor n blocosSync
-                               totalTagPai totalIdSync listaTags)
+                               totalTagPai totalIdSync)
   (setq ss          (ssget "X" '((0 . "INSERT")))
         totalTagPai 0
         totalIdSync 0
@@ -75,9 +75,6 @@
   (if (not ss)
     (progn (princ "\nNenhum bloco encontrado.") (list 0 0))
     (progn
-      ;; Coleta todos os 0E_TAG do desenho para o strip iterativo anti-acumulo
-      (setq listaTags (STW:coletar-tags ss))
-
       ;; --- Passo 1: propaga 0E_TAG pai -> filhos ---
       (setq i 0)
       (while (< i (sslength ss))
@@ -88,7 +85,7 @@
             (setq tagValor (STW:get-0e-tag obj))
             (if (and tagValor (/= tagValor "") (/= tagValor "-"))
               (progn
-                (setq n (STW:modificar-def nomeReal tagValor listaTags))
+                (setq n (STW:modificar-def nomeReal tagValor))
                 (setq totalTagPai (+ totalTagPai n))
                 (if (and (> n 0) (not (member nomeReal blocosSync)))
                   (setq blocosSync (cons nomeReal blocosSync)))))))
@@ -258,49 +255,32 @@
 ;; ================================================================
 ;; HELPERS: propagacao 0E_TAG pai -> filhos
 ;;
-;; Prefixo e lido do valor ATUAL do ATTRIB dentro da definicao do
-;; bloco pai (nao da ATTDEF do filho), preservando VP1-, VP2-, VP3-
-;; definidos manualmente.
+;; Estrategia anti-acumulacao com XDATA:
+;;   - Na primeira execucao: usa o valor atual do ATTRIB como prefixo
+;;     (preserva VP1-, VP2-, VP3- definidos manualmente) e salva em XDATA
+;;   - Nas execucoes seguintes: le o prefixo do XDATA (fixo, nunca muda)
+;;     e aplica o novo tag do pai por cima
 ;;
-;; Anti-acumulacao com remoção iterativa: antes de aplicar o novo tag
-;; do pai, remove do final do valor atual qualquer sufixo que coincida
-;; com um tag conhecido no desenho, repetindo ate nao sobrar mais.
-;;
-;; Exemplo (pai muda de "SL-Teste" para "SL-Novo"):
-;;   valor atual      : "VP1-SL-Teste"
-;;   tags conhecidos  : ["SL-Teste", "SL-Novo"]
-;;   strip iterativo  : "VP1-SL-Teste" -> tira "SL-Teste" -> "VP1-"
-;;   resultado        : "VP1-" + "SL-Novo" = "VP1-SL-Novo"  ✓
+;; Isso garante que trocar "SL-agora" -> "SL-novo" no pai resulta em
+;; "VP1-SL-novo" e nao "VP1-SL-agoraSL-novo".
 ;; ================================================================
 
-;; Coleta todos os valores 0E_TAG presentes no modelo (para anti-acumulo)
-(defun STW:coletar-tags (ss / i obj tag tags)
-  (setq tags '() i 0)
-  (if ss
-    (while (< i (sslength ss))
-      (setq obj (vlax-ename->vla-object (ssname ss i))
-            tag (STW:get-0e-tag obj))
-      (if (and tag (/= tag "") (not (member tag tags)))
-        (setq tags (cons tag tags)))
-      (setq i (1+ i))))
-  tags)
+;; Le o prefixo armazenado em XDATA no ATTRIB (retorna nil se nao existir)
+(defun STW:ler-prefixo (subEnt / dados xd appd)
+  (setq dados (entget subEnt '("STW_TAG"))
+        xd    (assoc -3 dados))
+  (if xd
+    (progn
+      (setq appd (assoc "STW_TAG" (cdr xd)))
+      (if appd (cdr (assoc 1000 (cdr appd))) nil))
+    nil))
 
-;; Extrai o prefixo de valorAtual removendo iterativamente qualquer sufixo
-;; que coincida com uma tag conhecida. Repete ate nao encontrar mais.
-(defun STW:extrair-prefixo (valorAtual listaTags / atual lenT continua)
-  (setq atual    valorAtual
-        continua T)
-  (while continua
-    (setq continua nil)
-    (foreach tag listaTags
-      (setq lenT (strlen tag))
-      (if (and (> lenT 0)
-               (>= (strlen atual) lenT)
-               (= (strcase (substr atual (- (strlen atual) lenT -1) lenT))
-                  (strcase tag)))
-        (setq atual    (substr atual 1 (- (strlen atual) lenT))
-              continua T))))
-  atual)
+;; Salva o prefixo em XDATA no ATTRIB para uso nas proximas execucoes
+(defun STW:salvar-prefixo (subDados prefixo)
+  (regapp "STW_TAG")
+  ; Remove -3 existente e adiciona novo com o prefixo
+  (setq subDados (vl-remove-if '(lambda (x) (= (car x) -3)) subDados))
+  (append subDados (list (list -3 (list "STW_TAG" (cons 1000 prefixo))))))
 
 ;; Retorna o valor do atributo 0E_TAG de um VLA INSERT no modelo
 (defun STW:get-0e-tag (obj / val)
@@ -313,15 +293,14 @@
   val)
 
 ;; Modifica na DEFINICAO do bloco pai os atributos dos filhos aninhados:
-;;   0E_TAG      = prefixo individual do filho + 0E_TAG do pai
+;;   0E_TAG      = prefixo (XDATA ou valor atual) + 0E_TAG do pai
 ;;   ID_VISIVEL  = handle do INSERT filho dentro da definicao
 ;;   NOME_DO_BLOCO = nome do bloco filho
 ;;
-;; listaTags: todos os 0E_TAG do desenho, usados para strip iterativo.
 ;; Blocos standalone (sem filhos aninhados) nao sao afetados.
 ;; Retorna quantidade de ATTRIBs 0E_TAG alterados.
-(defun STW:modificar-def (blkname valorPai listaTags / blkRec blkEnt ent dados tipo
-                           nomeFilho hndFilho prefixo novoValor valorAtual
+(defun STW:modificar-def (blkname valorPai / blkRec blkEnt ent dados tipo
+                           nomeFilho hndFilho prefixo novoValor
                            subEnt subDados tag modificou n)
   (setq blkRec (tblsearch "BLOCK" blkname) n 0)
   (if (not blkRec) (return n))
@@ -342,10 +321,15 @@
           (setq tag (strcase (cdr (assoc 2 subDados))))
           (cond
             ((= tag "0E_TAG")
-             (setq valorAtual (cdr (assoc 1 subDados))
-                   prefixo    (STW:extrair-prefixo valorAtual listaTags)
-                   novoValor  (strcat prefixo valorPai))
-             (entmod (subst (cons 1 novoValor) (assoc 1 subDados) subDados))
+             ; Prefixo: le do XDATA (execucoes anteriores) ou do valor atual (1a vez)
+             (setq prefixo  (or (STW:ler-prefixo subEnt)
+                                (cdr (assoc 1 subDados)))
+                   novoValor (strcat prefixo valorPai))
+             ; Salva prefixo em XDATA e atualiza valor em uma unica chamada entmod
+             (setq subDados (STW:salvar-prefixo
+                              (subst (cons 1 novoValor) (assoc 1 subDados) subDados)
+                              prefixo))
+             (entmod subDados)
              (setq modificou T n (1+ n)))
             ((= tag "ID_VISIVEL")
              (if hndFilho
