@@ -82,10 +82,10 @@
       (while (< i (sslength ss))
         (setq obj      (vlax-ename->vla-object (ssname ss i))
               nomeReal (STW:nome-efetivo obj))
-        (if (and nomeReal (stringp nomeReal) (/= (substr nomeReal 1 1) "*"))
+        (if (and nomeReal (= (type nomeReal) (quote STR)) (/= (substr nomeReal 1 1) "*"))
           (progn
             (setq tagValor (STW:get-0e-tag obj))
-            (if (and tagValor (stringp tagValor) (/= tagValor "") (/= tagValor "-"))
+            (if (and tagValor (= (type tagValor) (quote STR)) (/= tagValor "") (/= tagValor "-"))
               (progn
                 (setq n (STW:modificar-def nomeReal tagValor))
                 (setq totalTagPai (+ totalTagPai n))
@@ -101,7 +101,7 @@
         (setq obj      (vlax-ename->vla-object (ssname ss i))
               nomeReal (STW:nome-efetivo obj)
               hnd      (vla-get-Handle obj))
-        (if (and nomeReal (stringp nomeReal)
+        (if (and nomeReal (= (type nomeReal) (quote STR))
                  (= (strcase (substr nomeReal 1 7)) "ATL_STW")
                  (= (vla-get-HasAttributes obj) :vlax-true))
           (progn
@@ -164,7 +164,7 @@
               obj      (vlax-ename->vla-object ent)
               hnd      (vla-get-Handle obj)
               nomeReal (STW:nome-efetivo obj))
-        (if (and nomeReal (stringp nomeReal)
+        (if (and nomeReal (= (type nomeReal) (quote STR))
                  (= (strcase (substr nomeReal 1 7)) "ATL_STW")
                  (= (vla-get-HasAttributes obj) :vlax-true))
           (progn
@@ -390,7 +390,7 @@
             nomeReal (STW:nome-efetivo obj))
       (cond
         ;; Valida que e um INSERT ATL_STW
-        ((not (and nomeReal (stringp nomeReal)))
+        ((not (and nomeReal (= (type nomeReal) (quote STR))))
          (princ "\nEntidade invalida. Selecione um bloco ATL_STW."))
         ((not (= (strcase (substr nomeReal 1 7)) "ATL_STW"))
          (princ (strcat "\nBloco '" nomeReal "' nao e um bloco ATL_STW.")))
@@ -399,7 +399,7 @@
         (T
          ;; Le o 0E_TAG do bloco pai selecionado
          (setq tagValor (STW:get-0e-tag obj))
-         (if (not (and tagValor (stringp tagValor) (/= tagValor "") (/= tagValor "-")))
+         (if (not (and tagValor (= (type tagValor) (quote STR)) (/= tagValor "") (/= tagValor "-")))
            (princ (strcat "\nBloco '" nomeReal "' nao tem 0E_TAG definido."))
            (progn
              ;; Atualiza filhos dentro da definicao deste bloco
