@@ -85,13 +85,10 @@
             (setq tagValor (STW:get-0e-tag obj))
             (if (and tagValor (/= tagValor "") (/= tagValor "-"))
               (progn
-                ;; Atualiza a definicao do bloco (para novas instancias)
                 (setq n (STW:modificar-def nomeReal tagValor))
                 (setq totalTagPai (+ totalTagPai n))
                 (if (and (> n 0) (not (member nomeReal blocosSync)))
-                  (setq blocosSync (cons nomeReal blocosSync)))
-                ;; Atualiza instancias existentes no modelo diretamente
-                (STW:atualizar-instancias-modelo nomeReal tagValor)))))
+                  (setq blocosSync (cons nomeReal blocosSync)))))))
         (setq i (1+ i)))
       (if blocosSync
         (foreach blk blocosSync (STW:sync-bloco blk)))
@@ -292,13 +289,18 @@
         (setq val (vla-get-TextString att)))))
   val)
 
-;; Modifica 0E_TAG dos filhos na DEFINICAO do bloco pai via entmod.
-;; Le o prefixo do valor ATUAL do ATTRIB (preserva VP1-, VP2-, VP3-).
-;; Remove sufixo do pai anterior para evitar acumulacao.
-;; Retorna quantidade de ATTRIBs alterados.
+;; Modifica na DEFINICAO do bloco pai os atributos dos filhos aninhados:
+;;   0E_TAG      = prefixo individual do filho + 0E_TAG do pai
+;;   ID_VISIVEL  = handle do INSERT filho dentro da definicao
+;;   NOME_DO_BLOCO = nome do bloco filho
+;;
+;; O prefixo e lido do valor ATUAL do ATTRIB (preserva VP1-, VP2-, VP3-).
+;; Se o valor ja termina com o tag do pai, o sufixo e removido (anti-acumulo).
+;; Blocos standalone (sem filhos aninhados) nao sao afetados.
+;; Retorna quantidade de ATTRIBs 0E_TAG alterados.
 (defun STW:modificar-def (blkname valorPai / blkRec blkEnt ent dados tipo
-                           prefixo novoValor valorAtual
-                           subEnt subDados modificou n)
+                           nomeFilho hndFilho prefixo novoValor valorAtual
+                           subEnt subDados tag modificou n)
   (setq blkRec (tblsearch "BLOCK" blkname) n 0)
   (if (not blkRec) (return n))
   (setq blkEnt (cdr (assoc -1 blkRec))
@@ -308,71 +310,33 @@
           tipo  (cdr (assoc 0 dados)))
     (if (= tipo "INSERT")
       (progn
-        (setq subEnt  (entnext ent)
+        (setq nomeFilho (cdr (assoc 2 dados))
+              hndFilho  (cdr (assoc 5 dados))
+              subEnt    (entnext ent)
               modificou nil)
         (while (and subEnt
                     (setq subDados (entget subEnt))
                     (= (cdr (assoc 0 subDados)) "ATTRIB"))
-          (if (= (strcase (cdr (assoc 2 subDados))) "0E_TAG")
-            (progn
-              (setq valorAtual (cdr (assoc 1 subDados))
-                    prefixo    (STW:extrair-prefixo valorAtual valorPai)
-                    novoValor  (strcat prefixo valorPai))
-              (entmod (subst (cons 1 novoValor)
-                             (assoc 1 subDados)
-                             subDados))
-              (setq modificou T n (1+ n))))
+          (setq tag (strcase (cdr (assoc 2 subDados))))
+          (cond
+            ((= tag "0E_TAG")
+             (setq valorAtual (cdr (assoc 1 subDados))
+                   prefixo    (STW:extrair-prefixo valorAtual valorPai)
+                   novoValor  (strcat prefixo valorPai))
+             (entmod (subst (cons 1 novoValor) (assoc 1 subDados) subDados))
+             (setq modificou T n (1+ n)))
+            ((= tag "ID_VISIVEL")
+             (if hndFilho
+               (progn
+                 (entmod (subst (cons 1 hndFilho) (assoc 1 subDados) subDados))
+                 (setq modificou T))))
+            ((= tag "NOME_DO_BLOCO")
+             (entmod (subst (cons 1 nomeFilho) (assoc 1 subDados) subDados))
+             (setq modificou T)))
           (setq subEnt (entnext subEnt)))
         (if modificou (entupd ent))))
     (setq ent (entnext ent)))
   (if (and blkEnt (> n 0)) (entupd blkEnt))
-  n)
-
-;; Atualiza 0E_TAG, ID_VISIVEL e NOME_DO_BLOCO nas instancias do modelo.
-;; Itera todos os INSERTs e filtra pelo nome efetivo para suportar
-;; blocos dinamicos (cujo nome interno e *Uxx, nao o nome real).
-(defun STW:atualizar-instancias-modelo (blkname valorPai / ss i ent obj
-                                         nomeEfetivo hndFilho
-                                         subEnt subDados tag
-                                         prefixo novoValor valorAtual n)
-  (setq ss (ssget "X" '((0 . "INSERT")))
-        n  0)
-  (if ss
-    (progn
-      (setq i 0)
-      (while (< i (sslength ss))
-        (setq ent        (ssname ss i)
-              obj        (vlax-ename->vla-object ent)
-              nomeEfetivo (STW:nome-efetivo obj))
-        (if (and nomeEfetivo
-                 (= (strcase nomeEfetivo) (strcase blkname)))
-          (progn
-            (setq hndFilho (vla-get-Handle obj)
-                  subEnt   (entnext ent))
-            ;; Percorre ATTRIBs do filho no modelo ate SEQEND
-            (while (and subEnt
-                        (setq subDados (entget subEnt))
-                        (/= (cdr (assoc 0 subDados)) "SEQEND"))
-              (if (= (cdr (assoc 0 subDados)) "ATTRIB")
-                (progn
-                  (setq tag (strcase (cdr (assoc 2 subDados))))
-                  (cond
-                    ((= tag "0E_TAG")
-                     (setq valorAtual (cdr (assoc 1 subDados))
-                           prefixo    (STW:extrair-prefixo valorAtual valorPai)
-                           novoValor  (strcat prefixo valorPai))
-                     (entmod (subst (cons 1 novoValor) (assoc 1 subDados) subDados))
-                     (entupd subEnt)
-                     (setq n (1+ n)))
-                    ((= tag "ID_VISIVEL")
-                     (entmod (subst (cons 1 hndFilho) (assoc 1 subDados) subDados))
-                     (entupd subEnt))
-                    ((= tag "NOME_DO_BLOCO")
-                     (entmod (subst (cons 1 nomeEfetivo) (assoc 1 subDados) subDados))
-                     (entupd subEnt)))))
-              (setq subEnt (entnext subEnt)))
-            (entupd ent)))
-        (setq i (1+ i)))))
   n)
 
 ;; Chama ATTSYNC no bloco para sincronizar instancias com a definicao
