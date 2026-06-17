@@ -16,7 +16,8 @@
 ;;;     2. AutoCAD: STWImportar     <- Desktop\todos_atributos.csv
 ;;;
 ;;; Comandos disponiveis (todos comecam com STW):
-;;;   STWAtualizarTags     -> atualiza 0E_TAG pai/filho + ID_VISIVEL + NOME_DO_BLOCO
+;;;   STWSelecionarPai     -> usuario clica no bloco pai; so os filhos dele sao atualizados
+;;;   STWAtualizarTags     -> atualiza todos os blocos do desenho (pai/filho + ID_VISIVEL)
 ;;;   STWExportar          -> atualiza tudo e exporta CSV (CAD -> Excel)
 ;;;   STWImportar          <- importa CSV e atualiza blocos (Excel -> CAD)
 ;;; ================================================================
@@ -366,9 +367,71 @@
   (command "_.ATTSYNC" "_N" blkname)
   (princ (strcat "\n  ATTSYNC: " blkname)))
 
+
+;; ================================================================
+;; COMANDO 4: STWSelecionarPai
+;; O usuario clica em um bloco pai no desenho.
+;; Apenas os filhos daquele bloco sao atualizados:
+;;   - 0E_TAG filho = prefixo salvo + 0E_TAG do pai selecionado
+;;   - ID_VISIVEL e NOME_DO_BLOCO dos filhos tambem atualizados
+;; Todos os outros blocos do desenho ficam intocados.
+;;
+;; Uso tipico: bloco pai recem criado ou com 0E_TAG alterado no CAD.
+;; Blocos cujo tag foi editado pelo Excel permanecem sem interferencia.
+;; ================================================================
+(defun c:STWSelecionarPai (/ sel ent obj nomeReal tagValor n hnd listaAtribs atrib nomeAtrib)
+  (princ "\nClique no bloco pai para atualizar seus filhos: ")
+  (setq sel (entsel))
+  (if (not sel)
+    (princ "\nNenhuma entidade selecionada.")
+    (progn
+      (setq ent     (car sel)
+            obj     (vlax-ename->vla-object ent)
+            nomeReal (STW:nome-efetivo obj))
+      (cond
+        ;; Valida que e um INSERT ATL_STW
+        ((not (and nomeReal (stringp nomeReal)))
+         (princ "\nEntidade invalida. Selecione um bloco ATL_STW."))
+        ((not (= (strcase (substr nomeReal 1 7)) "ATL_STW"))
+         (princ (strcat "\nBloco '" nomeReal "' nao e um bloco ATL_STW.")))
+        ((not (= (vla-get-HasAttributes obj) :vlax-true))
+         (princ (strcat "\nBloco '" nomeReal "' nao possui atributos.")))
+        (T
+         ;; Le o 0E_TAG do bloco pai selecionado
+         (setq tagValor (STW:get-0e-tag obj))
+         (if (not (and tagValor (stringp tagValor) (/= tagValor "") (/= tagValor "-")))
+           (princ (strcat "\nBloco '" nomeReal "' nao tem 0E_TAG definido."))
+           (progn
+             ;; Atualiza filhos dentro da definicao deste bloco
+             (setq n (STW:modificar-def nomeReal tagValor))
+             (if (> n 0)
+               (progn
+                 (STW:sync-bloco nomeReal)
+                 ;; Sincroniza ID_VISIVEL e NOME_DO_BLOCO do proprio pai
+                 (setq hnd        (vla-get-Handle obj)
+                       listaAtribs (vlax-safearray->list
+                                     (vlax-variant-value (vla-GetAttributes obj))))
+                 (foreach atrib listaAtribs
+                   (setq nomeAtrib (strcase (vla-get-TagString atrib)))
+                   (cond
+                     ((= nomeAtrib "ID_VISIVEL")
+                      (vla-put-TextString atrib hnd))
+                     ((= nomeAtrib "NOME_DO_BLOCO")
+                      (vla-put-TextString atrib nomeReal))))
+                 (vla-update obj)
+                 (command "_.REGENALL")
+                 (princ (strcat "\nSTWSelecionarPai concluido: '"
+                                nomeReal "' | 0E_TAG='" tagValor
+                                "' | " (itoa n) " filho(s) atualizado(s).")))
+               (princ (strcat "\nBloco '" nomeReal
+                              "' nao tem filhos com 0E_TAG para atualizar."))))))))
+  (princ))
+
+
 ;; ================================================================
 (princ "\nstw-automacao.lsp carregado. Comandos disponiveis:")
-(princ "\n  STWAtualizarTags -> atualiza 0E_TAG pai/filho + ID_VISIVEL + NOME_DO_BLOCO")
+(princ "\n  STWSelecionarPai -> clique no bloco pai; so os filhos dele sao atualizados")
+(princ "\n  STWAtualizarTags -> atualiza todos os blocos do desenho")
 (princ "\n  STWExportar      -> atualiza tudo e exporta Desktop\\todos_atributos.csv")
 (princ "\n  STWImportar      <- importa Desktop\\todos_atributos.csv (Excel -> CAD)")
 (princ)
