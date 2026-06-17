@@ -8,6 +8,11 @@
 ;;; Resultado: 0E_TAG filho = valor_atual_filho + 0E_TAG_pai
 ;;; Exemplo:   filho "VP-" + pai "EV1-001"  =>  "VP-EV1-001"
 ;;;
+;;; Fluxo:
+;;;   1. Percorre INSERTs no espaco modelo
+;;;   2. Para cada pai com 0E_TAG preenchido, modifica filhos na definicao
+;;;   3. Usa BEDIT/BCLOSE para confirmar as mudancas e atualizar o desenho
+;;;
 ;;; Comando: AtualizarTagPai
 ;;; ================================================================
 
@@ -35,21 +40,17 @@
   val)
 
 ;; ----------------------------------------------------------------
-;; NUCLEO: modifica 0E_TAG nos filhos aninhados dentro da definicao
-;;         do bloco pai usando entget/entmod/entupd.
-;;         Apos modificar a definicao, forca entupd em todas as
-;;         instancias do bloco pai no espaco modelo para atualizar
-;;         a visualizacao no desenho.
-;;         Retorna quantidade de atributos alterados.
+;; HELPER: modifica ATTRIBs dos filhos na definicao via entget/entmod.
+;;         Retorna lista de nomes de blocos filhos que foram alterados.
 ;; ----------------------------------------------------------------
-(defun TAG-PAI:atualizar-def (blkname valorPai / blkRec ent dados tipo
-                                subEnt subDados tag valorAtual novoValor
-                                modificou n ssInst j)
-  (setq blkRec (tblsearch "BLOCK" blkname)
-        n 0)
-  (if (not blkRec) (exit))
+(defun TAG-PAI:modificar-def (blkname valorPai / blkRec ent dados tipo
+                               subEnt subDados tag valorAtual novoValor
+                               modificou n filhosAlterados)
+  (setq blkRec        (tblsearch "BLOCK" blkname)
+        n             0
+        filhosAlterados '())
+  (if (not blkRec) (return filhosAlterados))
 
-  ;; --- PASSO A: modifica ATTRIBs dos filhos na definicao do bloco ---
   (setq ent (cdr (assoc -2 blkRec)))
   (while ent
     (setq dados (entget ent)
@@ -57,7 +58,8 @@
 
     (if (= tipo "INSERT")
       (progn
-        (setq subEnt   (entnext ent)
+        (setq nomeFilho (cdr (assoc 2 dados)) ; nome do bloco filho
+              subEnt    (entnext ent)
               modificou nil)
         (while (and subEnt
                     (setq subDados (entget subEnt))
@@ -74,34 +76,41 @@
                                  subDados))
                   (setq modificou T n (1+ n))))))
           (setq subEnt (entnext subEnt)))
-        ;; entupd no INSERT filho dentro da definicao
-        (if modificou (entupd ent))))
+        (if modificou
+          (progn
+            (entupd ent)
+            (if (not (member nomeFilho filhosAlterados))
+              (setq filhosAlterados (cons nomeFilho filhosAlterados)))))))
 
     (setq ent (entnext ent)))
 
-  ;; --- PASSO B: forca entupd em todas as instancias do pai no modelo ---
-  ;; Isso faz o AutoCAD re-renderizar as instancias com os novos valores
-  (if (> n 0)
-    (progn
-      (setq ssInst (ssget "X" (list (cons 0 "INSERT") (cons 2 blkname))))
-      (if ssInst
-        (progn
-          (setq j 0)
-          (while (< j (sslength ssInst))
-            (entupd (ssname ssInst j))
-            (setq j (1+ j)))))))
-  n)
+  (list n filhosAlterados))
 
 ;; ----------------------------------------------------------------
-;; NUCLEO: percorre INSERTs do espaco modelo, le 0E_TAG do pai e
-;;         delega a atualizacao dos filhos
+;; HELPER: usa BEDIT/BCLOSE para confirmar as mudancas da definicao
+;;         e propagar para todas as instancias no desenho.
 ;; ----------------------------------------------------------------
-(defun TAG-PAI:propagar (/ ss i objPai nomePai tagValor total)
-  (setq ss    (ssget "X" '((0 . "INSERT")))
-        total 0)
+(defun TAG-PAI:commit-bloco (blkname / bloqEdit)
+  (setvar "BLOCKEDITLOCK" 0)
+  ;; Abre o editor do bloco silenciosamente e fecha salvando
+  (command "_.BEDIT" blkname)
+  (command "_.BCLOSE" "_S") ; _S = Save
+  (princ (strcat "\n  Bloco confirmado: " blkname)))
+
+;; ----------------------------------------------------------------
+;; NUCLEO: percorre INSERTs do espaco modelo, le 0E_TAG do pai,
+;;         modifica os filhos e confirma via BEDIT/BCLOSE
+;; ----------------------------------------------------------------
+(defun TAG-PAI:propagar (/ ss i objPai nomePai tagValor
+                            resultado n filhos
+                            blocosCommit total)
+  (setq ss          (ssget "X" '((0 . "INSERT")))
+        total       0
+        blocosCommit '())
   (if (not ss)
     (progn (princ "\nNenhum bloco encontrado.") (exit)))
 
+  ;; --- PASSO 1: modifica todas as definicoes necessarias ---
   (setq i 0)
   (while (< i (sslength ss))
     (setq objPai  (vlax-ename->vla-object (ssname ss i))
@@ -111,16 +120,38 @@
       (progn
         (setq tagValor (TAG-PAI:get-0e-tag objPai))
         (if (and tagValor (/= tagValor "") (/= tagValor "-"))
-          (setq total (+ total (TAG-PAI:atualizar-def nomePai tagValor))))))
+          (progn
+            (setq resultado (TAG-PAI:modificar-def nomePai tagValor)
+                  n         (car resultado)
+                  filhos    (cadr resultado))
+            (setq total (+ total n))
+            ;; Registra bloco pai para commit se houve alteracao
+            (if (> n 0)
+              (if (not (member nomePai blocosCommit))
+                (setq blocosCommit (cons nomePai blocosCommit))))))))
     (setq i (1+ i)))
+
+  ;; --- PASSO 2: confirma cada bloco modificado via BEDIT/BCLOSE ---
+  (if blocosCommit
+    (progn
+      (princ "\nConfirmando alteracoes nos blocos...")
+      (foreach blk blocosCommit
+        (TAG-PAI:commit-bloco blk))))
+
   total)
 
 ;; ----------------------------------------------------------------
 ;; COMANDO PRINCIPAL
 ;; ----------------------------------------------------------------
-(defun c:AtualizarTagPai (/ total)
+(defun c:AtualizarTagPai (/ total bloqLock)
   (vl-load-com)
+  ;; Garante que o editor de bloco pode ser aberto via comando
+  (setq bloqLock (getvar "BLOCKEDITLOCK"))
+  (setvar "BLOCKEDITLOCK" 0)
+
   (setq total (TAG-PAI:propagar))
+
+  (setvar "BLOCKEDITLOCK" bloqLock)
   (command "_.REGENALL")
   (princ (strcat "\nAtualizarTagPai concluido: "
                  (itoa total)
