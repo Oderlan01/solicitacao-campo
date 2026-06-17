@@ -2,22 +2,20 @@
 
 ;;; ================================================================
 ;;; tag-pai.lsp
-;;; Preenche o atributo 0E_TAG dos blocos filhos (aninhados) com o
-;;; nome do bloco pai que os contem na definicao.
+;;; Propaga o VALOR do atributo 0E_TAG do bloco pai para o atributo
+;;; 0E_TAG de todos os blocos filhos aninhados dentro dele.
 ;;;
-;;; Comando disponivel:
-;;;   AtualizarTagPai  -> atualiza 0E_TAG em todos os filhos aninhados
+;;; Fluxo:
+;;;   1. Percorre todos os INSERTs do espaco modelo
+;;;   2. Para cada pai com 0E_TAG preenchido, entra na definicao do bloco
+;;;   3. Busca INSERTs filhos com 0E_TAG dentro dessa definicao
+;;;   4. Escreve o VALOR do 0E_TAG do pai nos filhos
 ;;;
-;;; Regras:
-;;;   - Bloco filho (INSERT dentro de uma definicao de bloco):
-;;;       0E_TAG = nome da definicao pai
-;;;   - Bloco raiz (INSERT direto no espaco modelo sem pai):
-;;;       0E_TAG vazio permanece "-"
+;;; Comando: AtualizarTagPai
 ;;; ================================================================
 
 ;; ----------------------------------------------------------------
-;; HELPER: retorna o nome efetivo de um objeto INSERT (VLA)
-;; Suporta blocos dinamicos que expõem EffectiveName
+;; HELPER: retorna o nome efetivo de um VLA INSERT (suporta dinamicos)
 ;; ----------------------------------------------------------------
 (defun TAG-PAI:nome-efetivo (obj / nome)
   (setq nome nil)
@@ -28,12 +26,27 @@
   nome)
 
 ;; ----------------------------------------------------------------
-;; HELPER: percorre atributos de um VLA-object INSERT e atualiza
-;; 0E_TAG com o valor fornecido. Retorna quantidade de tags alteradas.
+;; HELPER: retorna o valor do atributo com a tag informada (strcase)
+;;         de um VLA INSERT. Retorna nil se nao encontrar.
 ;; ----------------------------------------------------------------
-(defun TAG-PAI:set-0e-tag (obj valor / atribs n)
-  (setq atribs (vlax-safearray->list
-                 (vlax-variant-value (vla-GetAttributes obj)))
+(defun TAG-PAI:get-attr (obj tagBusca / atribs val)
+  (setq val nil)
+  (if (= (vla-get-HasAttributes obj) :vlax-true)
+    (progn
+      (setq atribs (vlax-safearray->list
+                     (vlax-variant-value (vla-GetAttributes obj))))
+      (foreach att atribs
+        (if (= (strcase (vla-get-TagString att)) (strcase tagBusca))
+          (setq val (vla-get-TextString att))))))
+  val)
+
+;; ----------------------------------------------------------------
+;; HELPER: escreve valor em todos os atributos 0E_TAG de um VLA INSERT
+;;         dentro de uma definicao de bloco (entidade aninhada).
+;;         Retorna quantidade alterada.
+;; ----------------------------------------------------------------
+(defun TAG-PAI:set-0e-tag-def (entDef valor / atribs n)
+  (setq atribs (vlax-invoke entDef 'GetAttributes)
         n 0)
   (foreach att atribs
     (if (= (strcase (vla-get-TagString att)) "0E_TAG")
@@ -43,66 +56,58 @@
   n)
 
 ;; ----------------------------------------------------------------
-;; PASSO 1: Blocos aninhados dentro de definicoes de bloco
-;;   Para cada definicao de bloco pai, busca INSERTs filhos com
-;;   0E_TAG e preenche com o nome da definicao pai.
+;; NUCLEO: para cada INSERT pai no espaco modelo,
+;;         pega o valor de 0E_TAG e propaga para filhos na definicao
 ;; ----------------------------------------------------------------
-(defun TAG-PAI:atualizar-filhos (/ doc blocos nomePai defBloco ent total)
+(defun TAG-PAI:propagar (/ doc blocos ss i entPai objPai nomePai
+                            tagValor defBloco entFilho total)
   (setq doc    (vla-get-ActiveDocument (vlax-get-acad-object))
         blocos (vla-get-Blocks doc)
+        ss     (ssget "X" '((0 . "INSERT")))
         total  0)
-  (vlax-for defBloco blocos
-    (if (and (= (vla-get-IsLayout defBloco) :vlax-false)
-             (= (vla-get-IsXRef   defBloco) :vlax-false)
-             (/= (substr (vla-get-Name defBloco) 1 1) "*"))
+  (if (not ss)
+    (progn (princ "\nNenhum bloco encontrado.") (exit)))
+
+  (setq i 0)
+  (while (< i (sslength ss))
+    (setq entPai  (ssname ss i)
+          objPai  (vlax-ename->vla-object entPai)
+          nomePai (TAG-PAI:nome-efetivo objPai))
+
+    ;; Ignora espacos especiais e blocos sem nome util
+    (if (and nomePai (/= (substr nomePai 1 1) "*"))
       (progn
-        (setq nomePai (vla-get-Name defBloco))
-        (vlax-for ent defBloco
-          (if (and (= (vla-get-ObjectName ent) "AcDbBlockReference")
-                   (= (vla-get-HasAttributes ent) :vlax-true))
-            (setq total (+ total (TAG-PAI:set-0e-tag ent nomePai))))))))
+        ;; Pega o valor atual de 0E_TAG deste bloco pai
+        (setq tagValor (TAG-PAI:get-attr objPai "0E_TAG"))
+
+        ;; So propaga se o pai tiver 0E_TAG preenchido
+        (if (and tagValor (/= tagValor "") (/= tagValor "-"))
+          (progn
+            ;; Entra na definicao do bloco pai e atualiza filhos
+            (setq defBloco (vla-item blocos nomePai))
+            (if defBloco
+              (vlax-for entFilho defBloco
+                (if (and (= (vla-get-ObjectName entFilho) "AcDbBlockReference")
+                         (= (vla-get-HasAttributes entFilho) :vlax-true))
+                  (setq total
+                        (+ total
+                           (TAG-PAI:set-0e-tag-def entFilho tagValor))))))))))
+    (setq i (1+ i)))
   total)
 
 ;; ----------------------------------------------------------------
-;; PASSO 2: Blocos raiz no Espaco Modelo
-;;   Blocos inseridos diretamente no espaco modelo (sem pai) que
-;;   tenham 0E_TAG vazio recebem "-" para sinalizar nivel raiz.
-;; ----------------------------------------------------------------
-(defun TAG-PAI:marcar-raiz (/ ss i ent obj nome atribs att)
-  (setq ss (ssget "X" '((0 . "INSERT"))))
-  (if ss
-    (progn
-      (setq i 0)
-      (while (< i (sslength ss))
-        (setq ent (ssname ss i)
-              obj (vlax-ename->vla-object ent)
-              nome (TAG-PAI:nome-efetivo obj))
-        (if (and nome
-                 (/= (substr nome 1 1) "*")
-                 (= (vla-get-HasAttributes obj) :vlax-true))
-          (progn
-            (setq atribs (vlax-safearray->list
-                           (vlax-variant-value (vla-GetAttributes obj))))
-            (foreach att atribs
-              (if (and (= (strcase (vla-get-TagString att)) "0E_TAG")
-                       (= (vla-get-TextString att) ""))
-                (vla-put-TextString att "-")))))
-        (setq i (1+ i))))))
-
-;; ----------------------------------------------------------------
-;; COMANDO PRINCIPAL: AtualizarTagPai
+;; COMANDO PRINCIPAL
 ;; ----------------------------------------------------------------
 (defun c:AtualizarTagPai (/ total)
   (vl-load-com)
-  (setq total (TAG-PAI:atualizar-filhos))
-  (TAG-PAI:marcar-raiz)
+  (setq total (TAG-PAI:propagar))
   (command "_.REGEN")
   (princ (strcat "\nAtualizarTagPai concluido: "
                  (itoa total)
-                 " atributo(s) 0E_TAG atualizado(s) em blocos filhos."))
+                 " atributo(s) 0E_TAG propagado(s) dos pais para os filhos."))
   (princ))
 
 ;; ----------------------------------------------------------------
 (princ "\ntag-pai.lsp carregado.")
-(princ "\n  AtualizarTagPai  -> preenche 0E_TAG dos filhos com nome do bloco pai")
+(princ "\n  AtualizarTagPai  -> propaga valor de 0E_TAG do pai para os filhos aninhados")
 (princ)
