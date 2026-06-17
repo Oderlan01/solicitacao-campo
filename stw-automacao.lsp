@@ -41,14 +41,15 @@
     (setq str (substr str (+ pos 2))))
   (reverse (cons str lst)))
 
-;; Retorna o nome efetivo de um VLA INSERT (suporta dinamicos)
+;; Retorna o nome efetivo de um VLA INSERT (suporta dinamicos).
+;; Garante retorno de string ou nil — nunca T ou outro tipo.
 (defun STW:nome-efetivo (obj / nome)
   (setq nome nil)
   (if (vlax-property-available-p obj 'EffectiveName)
     (setq nome (vlax-get-property obj 'EffectiveName)))
-  (if (or (null nome) (= nome ""))
+  (if (not (and nome (= (type nome) 'STR) (/= nome "")))
     (setq nome (vlax-get-property obj 'Name)))
-  nome)
+  (if (= (type nome) 'STR) nome nil))
 
 ;; Retorna o caminho da Area de Trabalho (Desktop)
 (defun STW:desktop ()
@@ -80,10 +81,10 @@
       (while (< i (sslength ss))
         (setq obj      (vlax-ename->vla-object (ssname ss i))
               nomeReal (STW:nome-efetivo obj))
-        (if (and nomeReal (/= (substr nomeReal 1 1) "*"))
+        (if (and nomeReal (stringp nomeReal) (/= (substr nomeReal 1 1) "*"))
           (progn
             (setq tagValor (STW:get-0e-tag obj))
-            (if (and tagValor (/= tagValor "") (/= tagValor "-"))
+            (if (and tagValor (stringp tagValor) (/= tagValor "") (/= tagValor "-"))
               (progn
                 (setq n (STW:modificar-def nomeReal tagValor))
                 (setq totalTagPai (+ totalTagPai n))
@@ -99,7 +100,8 @@
         (setq obj      (vlax-ename->vla-object (ssname ss i))
               nomeReal (STW:nome-efetivo obj)
               hnd      (vla-get-Handle obj))
-        (if (and (= (strcase (substr nomeReal 1 7)) "ATL_STW")
+        (if (and nomeReal (stringp nomeReal)
+                 (= (strcase (substr nomeReal 1 7)) "ATL_STW")
                  (= (vla-get-HasAttributes obj) :vlax-true))
           (progn
             (setq listaAtribs
@@ -161,7 +163,8 @@
               obj      (vlax-ename->vla-object ent)
               hnd      (vla-get-Handle obj)
               nomeReal (STW:nome-efetivo obj))
-        (if (and (= (strcase (substr nomeReal 1 7)) "ATL_STW")
+        (if (and nomeReal (stringp nomeReal)
+                 (= (strcase (substr nomeReal 1 7)) "ATL_STW")
                  (= (vla-get-HasAttributes obj) :vlax-true))
           (progn
             (setq listaAtribs
@@ -265,15 +268,23 @@
 ;; "VP1-SL-novo" e nao "VP1-SL-agoraSL-novo".
 ;; ================================================================
 
-;; Le o prefixo armazenado em XDATA no ATTRIB (retorna nil se nao existir)
-(defun STW:ler-prefixo (subEnt / dados xd appd)
+;; Le o prefixo armazenado em XDATA no ATTRIB.
+;; Retorna string ou nil — nunca T ou outro tipo nao-string.
+(defun STW:ler-prefixo (subEnt / dados xd appd val)
   (setq dados (entget subEnt '("STW_TAG"))
-        xd    (assoc -3 dados))
-  (if xd
+        val   nil)
+  (if dados
     (progn
-      (setq appd (assoc "STW_TAG" (cdr xd)))
-      (if appd (cdr (assoc 1000 (cdr appd))) nil))
-    nil))
+      (setq xd (assoc -3 dados))
+      (if xd
+        (progn
+          (setq appd (assoc "STW_TAG" (cdr xd)))
+          (if appd
+            (progn
+              (setq val (cdr (assoc 1000 (cdr appd))))
+              (if (not (and val (= (type val) 'STR)))
+                (setq val nil))))))))
+  val)
 
 ;; Salva o prefixo em XDATA no ATTRIB para uso nas proximas execucoes
 (defun STW:salvar-prefixo (subDados prefixo)
@@ -322,9 +333,14 @@
           (cond
             ((= tag "0E_TAG")
              ; Prefixo: le do XDATA (execucoes anteriores) ou do valor atual (1a vez)
-             (setq prefixo  (or (STW:ler-prefixo subEnt)
-                                (cdr (assoc 1 subDados)))
-                   novoValor (strcat prefixo valorPai))
+             ; Garante que prefixo e sempre uma string (nunca T ou nil)
+             (setq prefixo (STW:ler-prefixo subEnt))
+             (if (not prefixo)
+               (progn
+                 (setq prefixo (cdr (assoc 1 subDados)))
+                 (if (not (and prefixo (= (type prefixo) 'STR)))
+                   (setq prefixo ""))))
+             (setq novoValor (strcat prefixo valorPai))
              ; Salva prefixo em XDATA e atualiza valor em uma unica chamada entmod
              (setq subDados (STW:salvar-prefixo
                               (subst (cons 1 novoValor) (assoc 1 subDados) subDados)
