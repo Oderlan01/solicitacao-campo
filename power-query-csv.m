@@ -39,6 +39,17 @@ let
     // ---------------------------------------------------------------
     // 2. RENOMEAR COLUNAS (tag normalizado -> nome amigavel)
     // ---------------------------------------------------------------
+
+    // Remove atributos que colidem com nomes amigaveis:
+    //   NOME_DO_BLOCO (atributo do bloco) -> "NOME DO BLOCO" apos normalizacao,
+    //   conflita com a renomeacao de "Nome Bloco" -> "NOME DO BLOCO"
+    //   ID_VISIVEL (atributo do bloco) -> redundante, HANDLE ja vem de HANDLE_CAD
+    ColsPre = Table.ColumnNames(#"Fonte Bufferizada"),
+    #"Atributos Redundantes Removidos" = Table.RemoveColumns(
+        #"Fonte Bufferizada",
+        List.Intersect({ColsPre, {"NOME DO BLOCO", "ID VISIVEL"}})
+    ),
+
     DicionarioNomes = {
         {"HANDLE CAD",          "HANDLE"},
         {"Nome Bloco",          "NOME DO BLOCO"},
@@ -54,9 +65,9 @@ let
         {"0I DADOS ENGENHARIA", "DADOS ENGENHARIA"},
         {"CAIXA DE PASSAGEM",   "CAIXA DE PASSAGEM"}
     },
-    ColsAtuais = Table.ColumnNames(#"Fonte Bufferizada"),
+    ColsAtuais = Table.ColumnNames(#"Atributos Redundantes Removidos"),
     #"Colunas Renomeadas" = Table.RenameColumns(
-        #"Fonte Bufferizada",
+        #"Atributos Redundantes Removidos",
         List.Select(DicionarioNomes, each List.Contains(ColsAtuais, _{0}))
     ),
 
