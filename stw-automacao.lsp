@@ -85,10 +85,13 @@
             (setq tagValor (STW:get-0e-tag obj))
             (if (and tagValor (/= tagValor "") (/= tagValor "-"))
               (progn
+                ;; Atualiza a definicao do bloco (para novas instancias)
                 (setq n (STW:modificar-def nomeReal tagValor))
                 (setq totalTagPai (+ totalTagPai n))
                 (if (and (> n 0) (not (member nomeReal blocosSync)))
-                  (setq blocosSync (cons nomeReal blocosSync)))))))
+                  (setq blocosSync (cons nomeReal blocosSync)))
+                ;; Atualiza instancias existentes no modelo diretamente
+                (STW:atualizar-instancias-modelo nomeReal tagValor)))))
         (setq i (1+ i)))
       (if blocosSync
         (foreach blk blocosSync (STW:sync-bloco blk)))
@@ -254,29 +257,32 @@
 
 ;; ================================================================
 ;; HELPERS: propagacao 0E_TAG pai -> filhos
-;; Resultado: 0E_TAG filho = ATTDEF_base_filho + 0E_TAG_pai
-;; Exemplo:   base "VP-" + pai "MO-Dois" => "VP-MO-Dois"
-;; (nunca acumula — a base vem sempre da ATTDEF do filho)
+;;
+;; Prefixo e lido do valor ATUAL do ATTRIB dentro da definicao do
+;; bloco pai (nao da ATTDEF do filho), preservando VP1-, VP2-, VP3-
+;; definidos manualmente. Anti-acumulacao: se o valor ja termina
+;; com o tag do pai atual, o sufixo e removido antes de reaplicar.
+;;
+;; Exemplo:
+;;   ATTRIB atual do filho dentro do pai : "VP1-"
+;;   0E_TAG do pai                       : "SL-Teste"
+;;   Resultado                           : "VP1-SL-Teste"
+;;   (re-execucao com mesmo pai)         : "VP1-SL-Teste"  <- sem acumulo
 ;; ================================================================
 
-;; Retorna o valor padrao (ATTDEF) do atributo 0E_TAG do bloco filho.
-;; Esse valor e a "base fixa" que nunca muda entre atualizacoes.
-(defun STW:get-attdef-base (childBlkName / blkRec ent dados tipo base)
-  (setq blkRec (tblsearch "BLOCK" childBlkName)
-        base   "")
-  (if blkRec
-    (progn
-      (setq ent (cdr (assoc -2 blkRec)))
-      (while ent
-        (setq dados (entget ent)
-              tipo  (cdr (assoc 0 dados)))
-        (if (and (= tipo "ATTDEF")
-                 (= (strcase (cdr (assoc 2 dados))) "0E_TAG"))
-          (setq base (cdr (assoc 1 dados))))
-        (setq ent (entnext ent)))))
-  base)
+;; Extrai o prefixo de valorAtual removendo valorPai do final se presente.
+;; Impede acumulacao em re-execucoes com o mesmo pai.
+(defun STW:extrair-prefixo (valorAtual valorPai / lenA lenP)
+  (setq lenA (strlen valorAtual)
+        lenP (strlen valorPai))
+  (if (and (> lenP 0)
+           (>= lenA lenP)
+           (= (strcase (substr valorAtual (- lenA lenP -1) lenP))
+              (strcase valorPai)))
+    (substr valorAtual 1 (- lenA lenP))
+    valorAtual))
 
-;; Retorna o valor do atributo 0E_TAG de um VLA INSERT
+;; Retorna o valor do atributo 0E_TAG de um VLA INSERT no modelo
 (defun STW:get-0e-tag (obj / val)
   (setq val nil)
   (if (= (vla-get-HasAttributes obj) :vlax-true)
@@ -286,30 +292,33 @@
         (setq val (vla-get-TextString att)))))
   val)
 
-;; Modifica 0E_TAG dos filhos na definicao do bloco pai
-;; usando entget/entmod/entupd para persistencia no desenho.
-;; Usa base fixa da ATTDEF + valor do pai (sem acumular).
-(defun STW:modificar-def (blkname valorPai / blkRec ent dados tipo
-                           nomeFilho baseFilho novoValor
-                           subEnt subDados tag modificou n)
+;; Modifica 0E_TAG dos filhos na DEFINICAO do bloco pai via entmod.
+;; Le o prefixo do valor ATUAL do ATTRIB (preserva VP1-, VP2-, VP3-).
+;; Remove sufixo do pai anterior para evitar acumulacao.
+;; Retorna quantidade de ATTRIBs alterados.
+(defun STW:modificar-def (blkname valorPai / blkRec blkEnt ent dados tipo
+                           prefixo novoValor valorAtual
+                           subEnt subDados modificou n)
   (setq blkRec (tblsearch "BLOCK" blkname) n 0)
   (if (not blkRec) (return n))
-  (setq ent (cdr (assoc -2 blkRec)))
+  (setq blkEnt (cdr (assoc -1 blkRec))
+        ent    (cdr (assoc -2 blkRec)))
   (while ent
     (setq dados (entget ent)
           tipo  (cdr (assoc 0 dados)))
     (if (= tipo "INSERT")
       (progn
-        (setq nomeFilho (cdr (assoc 2 dados))
-              baseFilho  (STW:get-attdef-base nomeFilho)
-              novoValor  (strcat baseFilho valorPai)
-              subEnt     (entnext ent)
-              modificou  nil)
+        (setq subEnt  (entnext ent)
+              modificou nil)
         (while (and subEnt
                     (setq subDados (entget subEnt))
                     (= (cdr (assoc 0 subDados)) "ATTRIB"))
           (if (= (strcase (cdr (assoc 2 subDados))) "0E_TAG")
             (progn
+              ;; Le prefixo do valor atual do ATTRIB (nao da ATTDEF)
+              (setq valorAtual (cdr (assoc 1 subDados))
+                    prefixo    (STW:extrair-prefixo valorAtual valorPai)
+                    novoValor  (strcat prefixo valorPai))
               (entmod (subst (cons 1 novoValor)
                              (assoc 1 subDados)
                              subDados))
@@ -317,9 +326,45 @@
           (setq subEnt (entnext subEnt)))
         (if modificou (entupd ent))))
     (setq ent (entnext ent)))
+  ;; Marca o registro do bloco como modificado para forcar redraw
+  (if (> n 0) (entupd blkEnt))
   n)
 
-;; Chama ATTSYNC no bloco pai para propagar mudancas para o modelo
+;; Atualiza 0E_TAG dos filhos diretamente nas instancias do modelo.
+;; Necessario porque modificar a definicao nao atualiza instancias
+;; existentes com ATTRIBs aninhados — o ATTSYNC nao cobre esse caso.
+(defun STW:atualizar-instancias-modelo (blkname valorPai / ss i ent dados
+                                         tipo nomeBloco subEnt subDados
+                                         prefixo novoValor valorAtual n)
+  (setq ss (ssget "X" (list '(0 . "INSERT") (cons 2 blkname)))
+        n  0)
+  (if ss
+    (progn
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq ent  (ssname ss i)
+              subEnt (entnext ent))
+        ;; Percorre ATTRIBs da instancia no modelo ate SEQEND
+        (while (and subEnt
+                    (setq subDados (entget subEnt))
+                    (/= (cdr (assoc 0 subDados)) "SEQEND"))
+          (if (and (= (cdr (assoc 0 subDados)) "ATTRIB")
+                   (= (strcase (cdr (assoc 2 subDados))) "0E_TAG"))
+            (progn
+              (setq valorAtual (cdr (assoc 1 subDados))
+                    prefixo    (STW:extrair-prefixo valorAtual valorPai)
+                    novoValor  (strcat prefixo valorPai))
+              (entmod (subst (cons 1 novoValor)
+                             (assoc 1 subDados)
+                             subDados))
+              (entupd subEnt)
+              (setq n (1+ n))))
+          (setq subEnt (entnext subEnt)))
+        (entupd ent)
+        (setq i (1+ i)))))
+  n)
+
+;; Chama ATTSYNC no bloco para sincronizar instancias com a definicao
 (defun STW:sync-bloco (blkname)
   (command "_.ATTSYNC" "_N" blkname)
   (princ (strcat "\n  ATTSYNC: " blkname)))
