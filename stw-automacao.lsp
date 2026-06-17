@@ -427,7 +427,7 @@
                                 "' | " (itoa n) " filho(s) atualizado(s).")))
                (princ (strcat "\nBloco '" nomeReal
                               "' nao tem filhos com 0E_TAG para atualizar."))))))))
-  (princ))
+  (princ)))
 
 
 ;; ================================================================
