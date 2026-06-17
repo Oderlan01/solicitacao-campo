@@ -16,9 +16,9 @@
 ;;;     2. AutoCAD: STWImportar     <- Desktop\todos_atributos.csv
 ;;;
 ;;; Comandos disponiveis (todos comecam com STW):
-;;;   STWExportar          -> exporta atributos para CSV
-;;;   STWImportar          <- importa CSV e atualiza blocos
-;;;   STWAtualizarTagPai   -> propaga 0E_TAG do pai para filhos
+;;;   STWAtualizarTags     -> atualiza 0E_TAG pai/filho + ID_VISIVEL + NOME_DO_BLOCO
+;;;   STWExportar          -> atualiza tudo e exporta CSV (CAD -> Excel)
+;;;   STWImportar          <- importa CSV e atualiza blocos (Excel -> CAD)
 ;;; ================================================================
 
 
@@ -58,16 +58,98 @@
 
 
 ;; ================================================================
-;; COMANDO 1: STWExportar
-;; Exporta atributos visiveis dos blocos ATL_STW para CSV.
+;; NUCLEO: STW:atualizar-todos
+;; Percorre todos os blocos ATL_STW e executa:
+;;   1. Propaga 0E_TAG do pai para os filhos aninhados (base ATTDEF + pai)
+;;   2. Sincroniza ID_VISIVEL = handle do bloco
+;;   3. Sincroniza NOME_DO_BLOCO = nome efetivo do bloco
+;; Retorna lista (total-tag-pai total-id-sync) para relatorio.
+;; ================================================================
+(defun STW:atualizar-todos (/ ss i obj nomeReal hnd listaAtribs atrib
+                               nomeAtrib tagValor n blocosSync
+                               totalTagPai totalIdSync)
+  (setq ss          (ssget "X" '((0 . "INSERT")))
+        totalTagPai 0
+        totalIdSync 0
+        blocosSync  '())
+  (if (not ss)
+    (progn (princ "\nNenhum bloco encontrado.") (list 0 0))
+    (progn
+      ;; --- Passo 1: propaga 0E_TAG pai -> filhos ---
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq obj      (vlax-ename->vla-object (ssname ss i))
+              nomeReal (STW:nome-efetivo obj))
+        (if (and nomeReal (/= (substr nomeReal 1 1) "*"))
+          (progn
+            (setq tagValor (STW:get-0e-tag obj))
+            (if (and tagValor (/= tagValor "") (/= tagValor "-"))
+              (progn
+                (setq n (STW:modificar-def nomeReal tagValor))
+                (setq totalTagPai (+ totalTagPai n))
+                (if (and (> n 0) (not (member nomeReal blocosSync)))
+                  (setq blocosSync (cons nomeReal blocosSync)))))))
+        (setq i (1+ i)))
+      (if blocosSync
+        (foreach blk blocosSync (STW:sync-bloco blk)))
+
+      ;; --- Passo 2: sincroniza ID_VISIVEL e NOME_DO_BLOCO ---
+      (setq i 0)
+      (while (< i (sslength ss))
+        (setq obj      (vlax-ename->vla-object (ssname ss i))
+              nomeReal (STW:nome-efetivo obj)
+              hnd      (vla-get-Handle obj))
+        (if (and (= (strcase (substr nomeReal 1 7)) "ATL_STW")
+                 (= (vla-get-HasAttributes obj) :vlax-true))
+          (progn
+            (setq listaAtribs
+                  (vlax-safearray->list (vlax-variant-value (vla-GetAttributes obj))))
+            (foreach atrib listaAtribs
+              (setq nomeAtrib (strcase (vla-get-TagString atrib)))
+              (cond
+                ((= nomeAtrib "ID_VISIVEL")
+                 (vla-put-TextString atrib hnd)
+                 (setq totalIdSync (1+ totalIdSync)))
+                ((= nomeAtrib "NOME_DO_BLOCO")
+                 (vla-put-TextString atrib nomeReal))))
+            (vla-update obj)))
+        (setq i (1+ i)))
+
+      (list totalTagPai totalIdSync))))
+
+
+;; ================================================================
+;; COMANDO 1: STWAtualizarTags
+;; Atualiza todos os blocos ATL_STW no desenho:
+;;   - Propaga 0E_TAG do pai para os filhos aninhados
+;;   - Sincroniza ID_VISIVEL com o handle real do bloco
+;;   - Sincroniza NOME_DO_BLOCO com o nome efetivo
+;; STWExportar chama este comando automaticamente antes de gravar.
+;; ================================================================
+(defun c:STWAtualizarTags (/ resultado)
+  (princ "\nAtualizando tags...")
+  (setq resultado (STW:atualizar-todos))
+  (command "_.REGENALL")
+  (princ (strcat "\nSTWAtualizarTags concluido:"
+                 "\n  0E_TAG filhos atualizados : " (itoa (car resultado))
+                 "\n  ID_VISIVEL sincronizados  : " (itoa (cadr resultado))))
+  (princ))
+
+
+;; ================================================================
+;; COMANDO 2: STWExportar
+;; Atualiza todos os atributos e exporta para CSV.
 ;; Arquivo: Desktop\todos_atributos.csv
 ;; Formato: HANDLE_CAD;Nome_Bloco;TAG1;TAG2;...
-;; Sincroniza ID_VISIVEL e NOME_DO_BLOCO automaticamente.
 ;; ================================================================
 (defun c:STWExportar (/ caminho ss i ent obj nomeReal hnd
                         listaAtribs nomeAtrib valorAtrib arq
                         blocosDados listaTags cabecalho linhaTexto
                         busca parAtribs)
+  ;; Garante que tudo esta atualizado antes de exportar
+  (princ "\nAtualizando tags antes de exportar...")
+  (STW:atualizar-todos)
+
   (setq caminho (strcat (STW:desktop) "\\todos_atributos.csv"))
   (setq ss (ssget "X" '((0 . "INSERT"))))
   (if (not ss)
@@ -90,10 +172,6 @@
                 (progn
                   (setq nomeAtrib  (vla-get-TagString atrib)
                         valorAtrib (vla-get-TextString atrib))
-                  (if (= (strcase nomeAtrib) "ID_VISIVEL")
-                    (progn (vla-put-TextString atrib hnd) (setq valorAtrib hnd)))
-                  (if (= (strcase nomeAtrib) "NOME_DO_BLOCO")
-                    (progn (vla-put-TextString atrib nomeReal) (setq valorAtrib nomeReal)))
                   (if (not (member nomeAtrib listaTags))
                     (setq listaTags (cons nomeAtrib listaTags)))
                   (setq parAtribs (cons (cons nomeAtrib valorAtrib) parAtribs)))))
@@ -175,14 +253,9 @@
 
 
 ;; ================================================================
-;; COMANDO 3: STWAtualizarTagPai
-;; Propaga o VALOR do atributo 0E_TAG do bloco pai para o
-;; atributo 0E_TAG dos blocos filhos aninhados dentro dele.
-;;
+;; HELPERS: propagacao 0E_TAG pai -> filhos
 ;; Resultado: 0E_TAG filho = ATTDEF_base_filho + 0E_TAG_pai
-;; Exemplo:   base "VP-" + pai "MO-Teste" => "VP-MO-Teste"
-;;
-;; Se pai mudar para "MO-Dois":  "VP-" + "MO-Dois" => "VP-MO-Dois"
+;; Exemplo:   base "VP-" + pai "MO-Dois" => "VP-MO-Dois"
 ;; (nunca acumula — a base vem sempre da ATTDEF do filho)
 ;; ================================================================
 
@@ -251,47 +324,9 @@
   (command "_.ATTSYNC" "_N" blkname)
   (princ (strcat "\n  ATTSYNC: " blkname)))
 
-(defun c:STWAtualizarTagPai (/ ss i objPai nomePai tagValor
-                                n blocosSync total)
-  (setq ss        (ssget "X" '((0 . "INSERT")))
-        total     0
-        blocosSync '())
-  (if (not ss)
-    (progn (princ "\nNenhum bloco encontrado.") (exit)))
-
-  ;; Passo 1: modifica definicoes dos blocos pai
-  (setq i 0)
-  (while (< i (sslength ss))
-    (setq objPai  (vlax-ename->vla-object (ssname ss i))
-          nomePai (STW:nome-efetivo objPai))
-    (if (and nomePai (/= (substr nomePai 1 1) "*"))
-      (progn
-        (setq tagValor (STW:get-0e-tag objPai))
-        (if (and tagValor (/= tagValor "") (/= tagValor "-"))
-          (progn
-            (setq n (STW:modificar-def nomePai tagValor))
-            (setq total (+ total n))
-            (if (and (> n 0) (not (member nomePai blocosSync)))
-              (setq blocosSync (cons nomePai blocosSync)))))))
-    (setq i (1+ i)))
-
-  ;; Passo 2: ATTSYNC em cada bloco pai modificado
-  (if blocosSync
-    (progn
-      (princ "\nSincronizando instancias no modelo...")
-      (foreach blk blocosSync
-        (STW:sync-bloco blk))))
-
-  (command "_.REGENALL")
-  (princ (strcat "\nSTWAtualizarTagPai concluido: "
-                 (itoa total)
-                 " atributo(s) 0E_TAG atualizado(s) nos filhos."))
-  (princ))
-
-
 ;; ================================================================
 (princ "\nstw-automacao.lsp carregado. Comandos disponiveis:")
-(princ "\n  STWExportar        -> Desktop\\todos_atributos.csv  (CAD -> Excel)")
-(princ "\n  STWImportar        <- Desktop\\todos_atributos.csv  (Excel -> CAD)")
-(princ "\n  STWAtualizarTagPai -> propaga 0E_TAG do pai para os filhos aninhados")
+(princ "\n  STWAtualizarTags -> atualiza 0E_TAG pai/filho + ID_VISIVEL + NOME_DO_BLOCO")
+(princ "\n  STWExportar      -> atualiza tudo e exporta Desktop\\todos_atributos.csv")
+(princ "\n  STWImportar      <- importa Desktop\\todos_atributos.csv (Excel -> CAD)")
 (princ)
