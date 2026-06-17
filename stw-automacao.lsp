@@ -67,7 +67,7 @@
 ;; ================================================================
 (defun STW:atualizar-todos (/ ss i obj nomeReal hnd listaAtribs atrib
                                nomeAtrib tagValor n blocosSync
-                               totalTagPai totalIdSync)
+                               totalTagPai totalIdSync listaTags)
   (setq ss          (ssget "X" '((0 . "INSERT")))
         totalTagPai 0
         totalIdSync 0
@@ -75,6 +75,9 @@
   (if (not ss)
     (progn (princ "\nNenhum bloco encontrado.") (list 0 0))
     (progn
+      ;; Coleta todos os 0E_TAG do desenho para o strip iterativo anti-acumulo
+      (setq listaTags (STW:coletar-tags ss))
+
       ;; --- Passo 1: propaga 0E_TAG pai -> filhos ---
       (setq i 0)
       (while (< i (sslength ss))
@@ -85,7 +88,7 @@
             (setq tagValor (STW:get-0e-tag obj))
             (if (and tagValor (/= tagValor "") (/= tagValor "-"))
               (progn
-                (setq n (STW:modificar-def nomeReal tagValor))
+                (setq n (STW:modificar-def nomeReal tagValor listaTags))
                 (setq totalTagPai (+ totalTagPai n))
                 (if (and (> n 0) (not (member nomeReal blocosSync)))
                   (setq blocosSync (cons nomeReal blocosSync)))))))
@@ -257,27 +260,47 @@
 ;;
 ;; Prefixo e lido do valor ATUAL do ATTRIB dentro da definicao do
 ;; bloco pai (nao da ATTDEF do filho), preservando VP1-, VP2-, VP3-
-;; definidos manualmente. Anti-acumulacao: se o valor ja termina
-;; com o tag do pai atual, o sufixo e removido antes de reaplicar.
+;; definidos manualmente.
 ;;
-;; Exemplo:
-;;   ATTRIB atual do filho dentro do pai : "VP1-"
-;;   0E_TAG do pai                       : "SL-Teste"
-;;   Resultado                           : "VP1-SL-Teste"
-;;   (re-execucao com mesmo pai)         : "VP1-SL-Teste"  <- sem acumulo
+;; Anti-acumulacao com remoção iterativa: antes de aplicar o novo tag
+;; do pai, remove do final do valor atual qualquer sufixo que coincida
+;; com um tag conhecido no desenho, repetindo ate nao sobrar mais.
+;;
+;; Exemplo (pai muda de "SL-Teste" para "SL-Novo"):
+;;   valor atual      : "VP1-SL-Teste"
+;;   tags conhecidos  : ["SL-Teste", "SL-Novo"]
+;;   strip iterativo  : "VP1-SL-Teste" -> tira "SL-Teste" -> "VP1-"
+;;   resultado        : "VP1-" + "SL-Novo" = "VP1-SL-Novo"  ✓
 ;; ================================================================
 
-;; Extrai o prefixo de valorAtual removendo valorPai do final se presente.
-;; Impede acumulacao em re-execucoes com o mesmo pai.
-(defun STW:extrair-prefixo (valorAtual valorPai / lenA lenP)
-  (setq lenA (strlen valorAtual)
-        lenP (strlen valorPai))
-  (if (and (> lenP 0)
-           (>= lenA lenP)
-           (= (strcase (substr valorAtual (- lenA lenP -1) lenP))
-              (strcase valorPai)))
-    (substr valorAtual 1 (- lenA lenP))
-    valorAtual))
+;; Coleta todos os valores 0E_TAG presentes no modelo (para anti-acumulo)
+(defun STW:coletar-tags (ss / i obj tag tags)
+  (setq tags '() i 0)
+  (if ss
+    (while (< i (sslength ss))
+      (setq obj (vlax-ename->vla-object (ssname ss i))
+            tag (STW:get-0e-tag obj))
+      (if (and tag (/= tag "") (not (member tag tags)))
+        (setq tags (cons tag tags)))
+      (setq i (1+ i))))
+  tags)
+
+;; Extrai o prefixo de valorAtual removendo iterativamente qualquer sufixo
+;; que coincida com uma tag conhecida. Repete ate nao encontrar mais.
+(defun STW:extrair-prefixo (valorAtual listaTags / atual lenT continua)
+  (setq atual    valorAtual
+        continua T)
+  (while continua
+    (setq continua nil)
+    (foreach tag listaTags
+      (setq lenT (strlen tag))
+      (if (and (> lenT 0)
+               (>= (strlen atual) lenT)
+               (= (strcase (substr atual (- (strlen atual) lenT -1) lenT))
+                  (strcase tag)))
+        (setq atual    (substr atual 1 (- (strlen atual) lenT))
+              continua T))))
+  atual)
 
 ;; Retorna o valor do atributo 0E_TAG de um VLA INSERT no modelo
 (defun STW:get-0e-tag (obj / val)
@@ -294,11 +317,10 @@
 ;;   ID_VISIVEL  = handle do INSERT filho dentro da definicao
 ;;   NOME_DO_BLOCO = nome do bloco filho
 ;;
-;; O prefixo e lido do valor ATUAL do ATTRIB (preserva VP1-, VP2-, VP3-).
-;; Se o valor ja termina com o tag do pai, o sufixo e removido (anti-acumulo).
+;; listaTags: todos os 0E_TAG do desenho, usados para strip iterativo.
 ;; Blocos standalone (sem filhos aninhados) nao sao afetados.
 ;; Retorna quantidade de ATTRIBs 0E_TAG alterados.
-(defun STW:modificar-def (blkname valorPai / blkRec blkEnt ent dados tipo
+(defun STW:modificar-def (blkname valorPai listaTags / blkRec blkEnt ent dados tipo
                            nomeFilho hndFilho prefixo novoValor valorAtual
                            subEnt subDados tag modificou n)
   (setq blkRec (tblsearch "BLOCK" blkname) n 0)
@@ -321,7 +343,7 @@
           (cond
             ((= tag "0E_TAG")
              (setq valorAtual (cdr (assoc 1 subDados))
-                   prefixo    (STW:extrair-prefixo valorAtual valorPai)
+                   prefixo    (STW:extrair-prefixo valorAtual listaTags)
                    novoValor  (strcat prefixo valorPai))
              (entmod (subst (cons 1 novoValor) (assoc 1 subDados) subDados))
              (setq modificou T n (1+ n)))
