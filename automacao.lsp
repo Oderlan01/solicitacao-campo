@@ -175,7 +175,8 @@
 ;; ----------------------------------------------------------------
 (defun c:ImportarCamposManuais (/ desktop caminho arq linha cabecalho listaTags
                                    dados hndVal ent obj listaAtribs i tagAtual
-                                   valorNovo atualizados avisos achou atrib)
+                                   valorNovo atualizados hndNaoEncontrados
+                                   tagsIgnoradas achou atrib)
   (setq desktop
         (vl-registry-read
           "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders"
@@ -185,11 +186,12 @@
   (if (not arq)
     (princ (strcat "\nArquivo nao encontrado: " caminho))
     (progn
-      (setq linha      (read-line arq)
-            cabecalho  (quebrar-texto linha ";")
-            listaTags  (cdr cabecalho) ; pula coluna HANDLE
-            atualizados 0
-            avisos      0)
+      (setq linha            (read-line arq)
+            cabecalho        (quebrar-texto linha ";")
+            listaTags        (cdr cabecalho) ; pula coluna HANDLE
+            atualizados      0
+            hndNaoEncontrados 0
+            tagsIgnoradas    '())            ; colunas sem atributo no bloco
       (while (setq linha (read-line arq))
         (setq dados  (quebrar-texto linha ";")
               hndVal (car dados))
@@ -197,9 +199,7 @@
           (progn
             (setq ent (handent hndVal))
             (if (not ent)
-              (progn
-                (princ (strcat "\nHandle nao encontrado: " hndVal))
-                (setq avisos (1+ avisos)))
+              (setq hndNaoEncontrados (1+ hndNaoEncontrados))
               (progn
                 (setq obj (vlax-ename->vla-object ent))
                 (if (= (vla-get-HasAttributes obj) :vlax-true)
@@ -217,20 +217,26 @@
                               (progn
                                 (vla-put-TextString atrib valorNovo)
                                 (setq achou T atualizados (1+ atualizados)))))
-                          (if (not achou)
-                            (progn
-                              (princ (strcat "\nAtributo '" tagAtual
-                                             "' ausente no bloco " hndVal))
-                              (setq avisos (1+ avisos))))))
+                          ; coluna sem atributo: registra uma unica vez para alerta final
+                          (if (and (not achou)
+                                   (not (member (strcase tagAtual)
+                                                (mapcar 'strcase tagsIgnoradas))))
+                            (setq tagsIgnoradas (cons tagAtual tagsIgnoradas)))))
                       (setq i (1+ i)))
                     (vla-update obj))))))))
       (close arq)
       (command "_regen")
       (princ (strcat "\nImportacao concluida: "
-                     (itoa atualizados) " atributo(s) atualizado(s)"
-                     (if (> avisos 0)
-                       (strcat ", " (itoa avisos) " aviso(s) — veja o Command Prompt.")
-                       ".")))))
+                     (itoa atualizados) " atributo(s) atualizado(s)."))
+      (if (> hndNaoEncontrados 0)
+        (princ (strcat "\nAvisos: " (itoa hndNaoEncontrados)
+                       " handle(s) nao encontrado(s) no desenho.")))
+      ; alerta unico para colunas que nao existem nos blocos (ex.: INTERFACE, CONEXAO, ORIGEM)
+      (if tagsIgnoradas
+        (progn
+          (princ "\nColunas ignoradas (nao existem como atributo nos blocos):")
+          (foreach t tagsIgnoradas
+            (princ (strcat "\n  - " t)))))))
   (princ))
 
 ;; ----------------------------------------------------------------
