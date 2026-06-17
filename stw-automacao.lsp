@@ -18,7 +18,6 @@
 ;;; Comandos disponiveis (todos comecam com STW):
 ;;;   STWExportar          -> exporta atributos para CSV
 ;;;   STWImportar          <- importa CSV e atualiza blocos
-;;;   STWVerificar         -> relatorio de atributos faltando
 ;;;   STWAtualizarTagPai   -> propaga 0E_TAG do pai para filhos
 ;;; ================================================================
 
@@ -176,55 +175,7 @@
 
 
 ;; ================================================================
-;; COMANDO 3: STWVerificar
-;; Relata quais definicoes de bloco nao possuem os atributos
-;; listados em STW:ATRIBS-ESPERADOS.
-;; ================================================================
-(setq STW:ATRIBS-ESPERADOS '("INTERFACE" "CONEXAO" "ORIGEM"))
-
-(defun c:STWVerificar (/ ss i ent obj nomeBloco listaAtribs tags
-                         vistos faltam faltandoNeste total)
-  (setq ss (ssget "X" '((0 . "INSERT"))))
-  (if (not ss)
-    (princ "\nNenhum bloco encontrado no desenho.")
-    (progn
-      (setq vistos '() faltam '() i 0)
-      (while (< i (sslength ss))
-        (setq ent      (ssname ss i)
-              obj      (vlax-ename->vla-object ent)
-              nomeBloco (STW:nome-efetivo obj))
-        (if (and nomeBloco (not (member nomeBloco vistos)))
-          (progn
-            (setq vistos (cons nomeBloco vistos))
-            (if (= (vla-get-HasAttributes obj) :vlax-true)
-              (progn
-                (setq listaAtribs
-                      (vlax-safearray->list (vlax-variant-value (vla-GetAttributes obj)))
-                      tags '())
-                (foreach atrib listaAtribs
-                  (setq tags (cons (strcase (vla-get-TagString atrib)) tags)))
-                (setq faltandoNeste
-                      (vl-remove-if
-                        (function (lambda (a) (member (strcase a) tags)))
-                        STW:ATRIBS-ESPERADOS))
-                (if faltandoNeste
-                  (setq faltam (cons (list nomeBloco faltandoNeste) faltam)))))))
-        (setq i (1+ i)))
-      (setq total (length vistos))
-      (if (null faltam)
-        (princ (strcat "\nOK! Todos os " (itoa total) " tipo(s) de bloco estao corretos."))
-        (progn
-          (princ "\n=== BLOCOS COM ATRIBUTOS FALTANDO ===")
-          (foreach r faltam
-            (princ (strcat "\n  Bloco: " (car r)))
-            (princ (strcat "\n    Faltam: " (vl-princ-to-string (cadr r)))))
-          (princ (strcat "\n\nTotal: " (itoa (length faltam))
-                         " definicao(oes) precisam de BATTMAN + ATTSYNC."))))))
-  (princ))
-
-
-;; ================================================================
-;; COMANDO 4: STWAtualizarTagPai
+;; COMANDO 3: STWAtualizarTagPai
 ;; Propaga o VALOR do atributo 0E_TAG do bloco pai para o
 ;; atributo 0E_TAG dos blocos filhos aninhados dentro dele.
 ;;
@@ -342,6 +293,5 @@
 (princ "\nstw-automacao.lsp carregado. Comandos disponiveis:")
 (princ "\n  STWExportar        -> Desktop\\todos_atributos.csv  (CAD -> Excel)")
 (princ "\n  STWImportar        <- Desktop\\todos_atributos.csv  (Excel -> CAD)")
-(princ "\n  STWVerificar       -> relatorio de atributos faltando nos blocos")
 (princ "\n  STWAtualizarTagPai -> propaga 0E_TAG do pai para os filhos aninhados")
 (princ)
