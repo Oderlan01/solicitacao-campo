@@ -291,9 +291,93 @@
   (princ))
 
 ;; ----------------------------------------------------------------
+;; FERRAMENTA 5: ATUALIZAR 0E_TAG DOS BLOCOS FILHOS COM NOME DO PAI
+;;
+;; Logica:
+;;   Para cada definicao de bloco que nao seja layout nem xref,
+;;   percorre todas as entidades internas. Quando encontra um INSERT
+;;   filho (bloco aninhado) que possua o atributo 0E_TAG, preenche
+;;   esse atributo com o nome da definicao pai.
+;;   Em seguida, percorre o espaco modelo/papel e faz o mesmo para
+;;   blocos com 0E_TAG cujo nome efetivo coincida com algum bloco pai
+;;   que contenha filhos atualizados — garantindo consistencia nas
+;;   instancias de nivel superior tambem.
+;;
+;; Comando: AtualizarTagPai
+;; ----------------------------------------------------------------
+(defun c:AtualizarTagPai (/ doc blocos nomePai defBloco ent entObj
+                             hasAtrib atribs att tagStr atualizados
+                             ssModel i entM objM nomeM atribsM attM)
+  (vl-load-com)
+  (setq doc        (vla-get-ActiveDocument (vlax-get-acad-object))
+        blocos     (vla-get-Blocks doc)
+        atualizados 0)
+
+  ;; --- PASSO 1: Blocos aninhados dentro de definicoes de bloco ---
+  (vlax-for defBloco blocos
+    (if (and (= (vla-get-IsLayout defBloco) :vlax-false)
+             (= (vla-get-IsXRef   defBloco) :vlax-false)
+             ;; ignora espacos especiais (*Model_Space, *Paper_Space etc.)
+             (/= (substr (vla-get-Name defBloco) 1 1) "*"))
+      (progn
+        (setq nomePai (vla-get-Name defBloco))
+        (vlax-for ent defBloco
+          ;; Procura apenas referencias de bloco dentro desta definicao
+          (if (= (vla-get-ObjectName ent) "AcDbBlockReference")
+            (progn
+              (setq hasAtrib (vla-get-HasAttributes ent))
+              (if (= hasAtrib :vlax-true)
+                (progn
+                  (setq atribs (vlax-invoke ent 'GetAttributes))
+                  (foreach att atribs
+                    (setq tagStr (strcase (vla-get-TagString att)))
+                    (if (= tagStr "0E_TAG")
+                      (progn
+                        (vla-put-TextString att nomePai)
+                        (setq atualizados (1+ atualizados))))))))))))
+
+  ;; --- PASSO 2: Instancias no Espaco Modelo com 0E_TAG sem pai ---
+  ;; Util quando o bloco filho tambem e inserido diretamente no desenho
+  ;; e precisa herdar o nome do bloco pai que o envolve espacialmente.
+  ;; Neste passo conservamos a tag vazia ou "-" como indicador de raiz.
+  (setq ssModel (ssget "X" '((0 . "INSERT"))))
+  (if ssModel
+    (progn
+      (setq i 0)
+      (while (< i (sslength ssModel))
+        (setq entM (ssname ssModel i)
+              objM (vlax-ename->vla-object entM))
+        ;; Obtem nome efetivo (suporta blocos dinamicos)
+        (setq nomeM nil)
+        (if (vlax-property-available-p objM 'EffectiveName)
+          (setq nomeM (vlax-get-property objM 'EffectiveName)))
+        (if (or (null nomeM) (= nomeM ""))
+          (setq nomeM (vlax-get-property objM 'Name)))
+        (if (and nomeM
+                 (/= (substr nomeM 1 1) "*")
+                 (= (vla-get-HasAttributes objM) :vlax-true))
+          (progn
+            (setq atribsM (vlax-safearray->list
+                            (vlax-variant-value (vla-GetAttributes objM))))
+            (foreach attM atribsM
+              ;; Para blocos raiz no espaco modelo, limpa 0E_TAG
+              ;; (indica que nao ha pai acima)
+              (if (= (strcase (vla-get-TagString attM)) "0E_TAG")
+                (if (= (vla-get-TextString attM) "")
+                  (vla-put-TextString attM "-"))))))
+        (setq i (1+ i)))))
+
+  (command "_.REGEN")
+  (princ (strcat "\nAtualizarTagPai concluido: "
+                 (itoa atualizados)
+                 " atributo(s) 0E_TAG atualizado(s) em blocos filhos."))
+  (princ))
+
+;; ----------------------------------------------------------------
 (princ "\nautomacao.lsp carregado. Comandos disponiveis:")
 (princ "\n  ExportarTodos         -> Desktop\\todos_atributos.csv")
 (princ "\n  ImportarTodos         <- Desktop\\todos_atributos.csv")
 (princ "\n  ImportarCamposManuais <- Desktop\\campos_manuais.csv (HANDLE;ATTR1;ATTR2;...)")
 (princ "\n  VerificarAtributos    -> relatorio de atributos faltando")
+(princ "\n  AtualizarTagPai       -> preenche 0E_TAG dos filhos com nome do bloco pai")
 (princ)
