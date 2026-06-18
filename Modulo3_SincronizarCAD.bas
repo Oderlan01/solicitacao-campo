@@ -20,14 +20,17 @@ Option Explicit
 Function ObterMapa() As Object
     Dim m As Object
     Set m = CreateObject("Scripting.Dictionary")
+    ' Apenas campos RW (round-trip). Alinhado ao dicionario em FLUXO_DADOS.md.
+    ' DESCRICAO GERAL e DADOS ENGENHARIA sao derivados (R) e NAO entram aqui,
+    ' para nao corromper o bloco na volta ao CAD.
+    m.Add "CATEGORIA",         "0A_CATEGORIA"
+    m.Add "SETOR",             "0B_SETOR"
+    m.Add "FAMILIA",           "0C_FAMILIA"
+    m.Add "MODELO",            "0D_MODELO"
     m.Add "TAG",               "0E_TAG"
+    m.Add "EQUIPAMENTO AUX",   "0F_TAG_AUXILIAR"
     m.Add "ACIONAMENTO",       "0H_ACIONAMENTO"
     m.Add "SENSOR",            "0J_SENSOR"
-    m.Add "FAMILIA",           "0C_FAMILIA"
-    m.Add "SETOR",             "0B_SETOR"
-    m.Add "MODELO",            "0D_MODELO"
-    m.Add "DESCRICAO GERAL",   "0G_DESCRICAO_GERAL"
-    m.Add "EQUIPAMENTO AUX",   "0F_TAG_AUXILIAR"
     m.Add "CAIXA DE PASSAGEM", "CAIXA_DE_PASSAGEM"
     m.Add "VALVULA ABRE",      "VALVULA_ABRE"
     Set ObterMapa = m
@@ -68,7 +71,7 @@ Sub ImportarDoCAD()
 
     If Dir(caminho) = "" Then
         MsgBox "Arquivo nao encontrado:" & vbNewLine & caminho & vbNewLine & vbNewLine & _
-               "Execute primeiro o comando ExportarTodos no AutoCAD.", _
+               "Execute primeiro o comando STWExportar no AutoCAD.", _
                vbExclamation, "Arquivo nao encontrado"
         Exit Sub
     End If
@@ -213,7 +216,7 @@ End Sub
 ' EXPORTAR EXCEL -> CAD  (atualiza o CSV existente em memoria)
 ' Le Desktop\todos_atributos.csv, atualiza os campos mapeados
 ' pelo HANDLE e grava de volta SEM alterar estrutura ou colunas.
-' Em seguida rode ImportarTodos no AutoCAD para aplicar.
+' Em seguida rode STWImportar no AutoCAD para aplicar.
 ' ----------------------------------------------------------------
 Sub ExportarParaCAD()
     Dim ws As Worksheet, lo As ListObject
@@ -235,7 +238,7 @@ Sub ExportarParaCAD()
     caminho = Environ("USERPROFILE") & "\Desktop\todos_atributos.csv"
     If Dir(caminho) = "" Then
         MsgBox "Arquivo nao encontrado:" & vbNewLine & caminho & vbNewLine & vbNewLine & _
-               "Execute primeiro o comando ExportarTodos no AutoCAD.", vbCritical, "Erro"
+               "Execute primeiro o comando STWExportar no AutoCAD.", vbCritical, "Erro"
         Exit Sub
     End If
 
@@ -280,7 +283,7 @@ Sub ExportarParaCAD()
 
     If Not idxCsvCol.Exists("HANDLE_CAD") Then
         MsgBox "Coluna HANDLE_CAD nao encontrada no CSV." & vbNewLine & _
-               "Verifique se o arquivo foi gerado pelo comando ExportarTodos do AutoCAD.", vbCritical, "Erro"
+               "Verifique se o arquivo foi gerado pelo comando STWExportar do AutoCAD.", vbCritical, "Erro"
         Exit Sub
     End If
     Dim idxHandleCSV As Long: idxHandleCSV = idxCsvCol("HANDLE_CAD")
@@ -397,7 +400,7 @@ ProximaLinha:
         msg = msg & vbNewLine & vbNewLine & _
               naoEncontrados & " handle(s) da planilha nao encontrado(s) no CSV."
     End If
-    msg = msg & vbNewLine & vbNewLine & "Execute o comando ImportarTodos no AutoCAD."
+    msg = msg & vbNewLine & vbNewLine & "Execute o comando STWImportar no AutoCAD."
     MsgBox msg, vbInformation, "Exportar para CAD"
     Exit Sub
 
