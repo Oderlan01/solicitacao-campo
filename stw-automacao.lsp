@@ -16,15 +16,64 @@
 ;;;     2. AutoCAD: STWImportar     <- Desktop\todos_atributos.csv
 ;;;
 ;;; Comandos disponiveis (todos comecam com STW):
-;;;   STWSelecionarPai -> usuario clica no bloco pai; so os filhos dele sao atualizados
-;;;   STWAtualizarTags -> atualiza todos os blocos do desenho (pai/filho + ID_VISIVEL)
-;;;   STWExportar      -> atualiza tudo e exporta CSV (CAD -> Excel)
-;;;   STWImportar      <- importa CSV e atualiza blocos (Excel -> CAD)
+;;;   STWSelecionarPai    -> usuario clica no bloco pai; so os filhos dele sao atualizados
+;;;   STWAtualizarTags    -> atualiza todos os blocos do desenho (pai/filho + ID_VISIVEL)
+;;;   STWExportar         -> atualiza tudo e exporta CSV (CAD -> Excel)
+;;;   STWImportar         <- importa CSV e atualiza blocos (Excel -> CAD)
+;;;   STWExportarDominios -> exporta dominios.csv (listas de validacao p/ dropdowns Excel)
 ;;;
 ;;; Compativel com Modulo3_SincronizarCAD.bas (VBA Excel):
 ;;;   ExportarParaCAD() atualiza todos_atributos.csv em memoria
 ;;;   ImportarDoCAD()   le todos_atributos.csv gerado pelo STWExportar
+;;;
+;;; ARQUITETURA (hibrida, centrada no LISP):
+;;;   O LISP e dono dos DOMINIOS de validacao (STW:DOMINIOS), exportados para
+;;;   o Excel montar os dropdowns sem listas hard-coded. O dicionario canonico
+;;;   de variaveis (atributo CAD <-> nome amigavel <-> grupo <-> direcao) vive
+;;;   em FLUXO_DADOS.md, que tambem documenta as regras de negocio.
 ;;; ================================================================
+
+
+;; ================================================================
+;; DOMINIOS DE VALIDACAO  (listas de dropdown dependentes)
+;;
+;; Cada entrada: (CAMPO  DEPENDE_DE  REGRAS)
+;;   CAMPO      : campo cujo dropdown estamos definindo (nome amigavel)
+;;   DEPENDE_DE : campo do qual o dropdown depende (ou nil)
+;;   REGRAS     : lista de (VALORES_PAI . OPCOES)
+;;                VALORES_PAI : lista de valores do campo pai que disparam
+;;                              estas OPCOES; "*" = qualquer outro valor
+;;                OPCOES      : lista de strings oferecidas no dropdown
+;; Exportado por STWExportarDominios para dominios.csv.
+;;
+;; Nota de codificacao: valores mantidos SEM acento (ASCII) para evitar
+;; mojibake entre AutoCAD (ANSI/1252) e a leitura ANSI do VBA. O dropdown de
+;; INTERFACE depende do valor escolhido no dropdown de ACIONAMENTO (ambos
+;; vindos daqui), entao a dependencia permanece consistente.
+;; ================================================================
+(setq STW:DOMINIOS
+  '(("ACIONAMENTO" "CATEGORIA"
+      (("MOTOR") .
+        ("Soft Starter" "Inversor" "Partida Direta" "Partida Direta + Inv"
+         "Inversor + PD" "Partida Direta + Rev" "Partida Inteligente"
+         "Soft Starter + Rev"))
+      (("*") .
+        ("Capacitivo" "Indutivo" "Magnetico" "Trava Seg." "Laser"
+         "Temperatura" "Ultrassonico" "Contato" "Acionamento" "Feedback"
+         "Valvula" "Simples Solenoide" "Dupla Solenoide")))
+    ("INTERFACE" "ACIONAMENTO"
+      (("Inversor" "Soft Starter" "Partida Inteligente" "Soft Starter + Rev"
+        "Inversor + PD" "Partida Direta + Inv") .
+        ("I/O" "Rede"))
+      (("Partida Direta" "Partida Direta + Rev") .
+        ("I/O"))
+      (("Capacitivo" "Indutivo" "Magnetico" "Trava Seg." "Laser"
+        "Ultrassonico" "Contato" "Feedback") .
+        ("DI" "AI" "Circuito Eletrico" "I/O Link"))
+      (("Temperatura") .
+        ("AI" "I/O Link" "RTD"))
+      (("Acionamento" "Valvula" "Dupla Solenoide" "Simples Solenoide") .
+        ("AO" "DO" "Circuito Eletrico" "I/O Link")))))
 
 
 ;; ================================================================
@@ -477,9 +526,55 @@
 
 
 ;; ================================================================
+;; COMANDO 5: STWExportarDominios
+;;
+;; Exporta as listas de validacao (STW:DOMINIOS) para um CSV que o Excel
+;; consome para montar os dropdowns dependentes (RN4), sem listas hard-coded.
+;;
+;; Arquivo: Desktop\dominios.csv
+;; Formato: CAMPO;DEPENDE_DE;VALOR_PAI;OPCOES
+;;   - uma linha por par (regra) do dominio
+;;   - VALOR_PAI: valores do campo pai separados por "|" ("*" = demais casos)
+;;   - OPCOES   : opcoes do dropdown separadas por "|"
+;; ================================================================
+(defun c:STWExportarDominios (/ caminho arq dom campo dependeDe regra
+                                valoresPai opcoes linhaTexto nLinhas)
+  (setq caminho (strcat (STW:desktop) "\\dominios.csv")
+        arq     (open caminho "w")
+        nLinhas 0)
+  (if (not arq)
+    (princ (strcat "\nNao foi possivel criar: " caminho))
+    (progn
+      (write-line "CAMPO;DEPENDE_DE;VALOR_PAI;OPCOES" arq)
+      (foreach dom STW:DOMINIOS
+        (setq campo     (car dom)
+              dependeDe  (cadr dom))
+        (foreach regra (cddr dom)
+          (setq valoresPai (STW:juntar (car regra) "|")
+                opcoes      (STW:juntar (cdr regra) "|")
+                linhaTexto  (strcat campo ";"
+                                    (if dependeDe dependeDe "") ";"
+                                    valoresPai ";" opcoes))
+          (write-line linhaTexto arq)
+          (setq nLinhas (1+ nLinhas))))
+      (close arq)
+      (princ (strcat "\nSTWExportarDominios concluido: " caminho
+                     " (" (itoa nLinhas) " regra(s))"))))
+  (princ))
+
+;; Junta uma lista de strings com um separador. "" se lista vazia.
+(defun STW:juntar (lst sep / res)
+  (setq res "")
+  (foreach s lst
+    (setq res (if (= res "") s (strcat res sep s))))
+  res)
+
+
+;; ================================================================
 (princ "\nstw-automacao.lsp carregado. Comandos disponiveis:")
-(princ "\n  STWAtualizarTags -> atualiza todos os blocos (pai/filho + ID_VISIVEL)")
-(princ "\n  STWExportar      -> atualiza tudo e exporta Desktop\\todos_atributos.csv")
-(princ "\n  STWImportar      <- importa Desktop\\todos_atributos.csv (Excel -> CAD)")
-(princ "\n  STWSelecionarPai -> clique no bloco pai; so os filhos dele sao atualizados")
+(princ "\n  STWAtualizarTags    -> atualiza todos os blocos (pai/filho + ID_VISIVEL)")
+(princ "\n  STWExportar         -> atualiza tudo e exporta Desktop\\todos_atributos.csv")
+(princ "\n  STWImportar         <- importa Desktop\\todos_atributos.csv (Excel -> CAD)")
+(princ "\n  STWSelecionarPai    -> clique no bloco pai; so os filhos dele sao atualizados")
+(princ "\n  STWExportarDominios -> exporta Desktop\\dominios.csv (dropdowns do Excel)")
 (princ)
