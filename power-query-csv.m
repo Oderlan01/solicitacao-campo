@@ -1,99 +1,106 @@
 // ================================================================
-// Power Query — Aba Componentes (compoteste.xlsm)
-// Fonte: Desktop\todos_atributos.csv (gerado pelo STWExportar)
+// Power Query — Aba Componentes v2
+// Fonte: Desktop\todos_atributos.csv (gerado pelo STWExportar / LISP)
 //
-// Fluxo (sem DATAEXTRACTION manual):
-//   1. AutoCAD: STWExportar      -> Desktop\todos_atributos.csv
-//   2. Excel:   Atualizar query  <- Desktop\todos_atributos.csv
+// ARQUITETURA (hierarquia resolvida no Power Query — opcao 1B):
+//   - Cada linha do CSV = 1 bloco do CAD (pai OU filho), com HANDLE proprio.
+//   - Vinculo filho -> pai: coluna ID_PAI (= HANDLE do bloco pai).
+//   - EQUIPAMENTO (tag mestre do grupo): self-join via ID_PAI; o pai usa o
+//     proprio Atributo. ATRIBUTO (tag pura) = TAG apos o primeiro hifen
+//     (ex.: MTE-RO-100 -> RO-100); sem hifen, a propria TAG.
+//   - TAG ja vem PRONTA do LISP (nao concatenar).
+//   - Sufixo (n) em colunas BASE (TAG(2), MODELO(2), CORRENTE(2)...):
+//     gera REPLICA da linha que herda tudo e sobrepoe os campos (n).
+//     SUBORDEM = n.
+//   - Colunas NAO-base preenchidas (SENSOR_*, VAVULA_*, CELULA_DE_CARGA(n)...):
+//     geram LINHA FILHA: CATEGORIA = nome da coluna, TAG = valor da celula.
+//     Filhos laterais herdam o contexto (LOCAL/SETOR/FAMILIA/CAIXA); campos
+//     tecnicos (MODELO/ACIONAMENTO/POTENCIA/...) so se o nome da coluna
+//     contiver VAVULA/VALVULA (regra herdaTec).
+//   - INDICE: UM POR BLOCO — a linha pai e todas as suas filhas (replicas,
+//     laterais e blocos-filho via ID_PAI) recebem o MESMO numero, renumerado
+//     sequencialmente (1, 2, 3...) apos a ordenacao.
+//   - Colunas auxiliares do AutoCAD / metadados: lista ColunasExcluir (edite).
 //
-// Logica de expansao preservada:
-//   - Sufixos TAG(1), TAG(A), ACIONAMENTO(1)... geram linhas pai extras
-//   - Colunas laterais (VALVULA ABRE, SENSOR...) geram linhas filho
-//   - Estrutura final identica a versao com DATAEXTRACTION
+// Saida: 20 colunas fixas do gabarito de homologacao, Motor no topo do grupo.
 // ================================================================
 let
-    // ---------------------------------------------------------------
-    // 1. CARREGAMENTO DO CSV
-    // ---------------------------------------------------------------
+    // ------------------------------------------------------------
+    // ETAPA 0: CONFIGURACAO (edite aqui)
+    // ------------------------------------------------------------
     CaminhoCSV = "C:\Users\oderlan.colcenti\Desktop\todos_atributos.csv",
+
+    // Colunas auxiliares do AutoCAD e metadados de desenho (descartadas).
+    // Nomes em CAIXA ALTA (a Etapa 2 forca os cabecalhos para maiusculas).
+    ColunasExcluir = {
+        "2TAG_", "AUTOR", "DATA", "ESCALA", "REVISÃO", "ESTADO", "TIPO",
+        "MUNICÍPIO", "PAÍS", "NOME_DA_EMPRESA", "NUM_CLI", "NUM_DESENHO_CLIENTE",
+        "NUM_DESENHO_STW", "NUM_OBRA", "NUM_PROJ", "DETALHE_PROJETO1",
+        "ID_AUTOMAÇÃO", "INSTALAÇÃO", "DESCRIÇÃO_GERAL", "ID_VISIVEL",
+        "NOME_BLOCO", "NOME_DO_BLOCO", "NAME", "SUFIXO",
+        "DESTINO_DIREITA", "DESTINO_ESQUERDA"
+    },
+
+    // Colunas BASE (nao geram filho lateral; suas variantes "(n)" sobrepoem
+    // as replicas de sufixo). Tudo que nao for base nem excluido vira filho.
+    ColunasBase = {
+        "HANDLE", "ID_PAI", "LOCAL", "TAG", "EQUIPAMENTO AUX", "SETOR",
+        "FAMILIA", "CATEGORIA", "MODELO", "ACIONAMENTO", "POTÊNCIA",
+        "CORRENTE", "TENSÃO", "CAPACIDADE", "CAIXA_DE_PASSAGEM", "ÍNDICE_LINHA"
+    },
+
+    // ------------------------------------------------------------
+    // ETAPA 1: CARGA (CSV ';' em ANSI 1252 — padrao do AutoCAD)
+    // ------------------------------------------------------------
     Fonte = Csv.Document(
         File.Contents(CaminhoCSV),
         [Delimiter=";", Columns=null, Encoding=1252, QuoteStyle=QuoteStyle.None]
     ),
     #"Cabeçalhos Promovidos" = Table.PromoteHeaders(Fonte, [PromoteAllScalars=true]),
 
-    // Normaliza nomes de colunas: substitui _ por espaço
-    // (igual ao passo Text.Replace do Power Query original com DATAEXTRACTION)
-    #"Nomes Normalizados" = Table.TransformColumnNames(
-        #"Cabeçalhos Promovidos",
-        each Text.Replace(_, "_", " ")
+    // ------------------------------------------------------------
+    // ETAPA 2: BLINDAGEM CASE-SENSITIVE (cabecalhos em CAIXA ALTA)
+    // ------------------------------------------------------------
+    #"Maiúsculas" = Table.TransformColumnNames(#"Cabeçalhos Promovidos", Text.Upper),
+
+    // ------------------------------------------------------------
+    // ETAPA 3: PURGA CONFIGURAVEL (auxiliares do AutoCAD)
+    // ------------------------------------------------------------
+    #"Purgada" = Table.RemoveColumns(
+        #"Maiúsculas",
+        List.Intersect({Table.ColumnNames(#"Maiúsculas"), ColunasExcluir})
     ),
 
-    // Filtro inicial: remove linhas sem HANDLE CAD
-    #"Filtro Inicial" = Table.SelectRows(
-        #"Nomes Normalizados",
-        each [#"HANDLE CAD"] <> null and Text.Trim(Text.From([#"HANDLE CAD"])) <> ""
-    ),
-    #"Fonte Bufferizada" = Table.Buffer(#"Filtro Inicial"),
-
-    // ---------------------------------------------------------------
-    // 2. RENOMEAR COLUNAS (tag normalizado -> nome amigavel)
-    // ---------------------------------------------------------------
-
-    // Remove atributos que colidem com nomes amigaveis:
-    //   NOME_DO_BLOCO (atributo do bloco) -> "NOME DO BLOCO" apos normalizacao,
-    //   conflita com a renomeacao de "Nome Bloco" -> "NOME DO BLOCO"
-    //   ID_VISIVEL (atributo do bloco) -> redundante, HANDLE ja vem de HANDLE_CAD
-    ColsPre = Table.ColumnNames(#"Fonte Bufferizada"),
-    #"Atributos Redundantes Removidos" = Table.RemoveColumns(
-        #"Fonte Bufferizada",
-        List.Intersect({ColsPre, {"NOME DO BLOCO", "ID VISIVEL"}})
+    // ------------------------------------------------------------
+    // ETAPA 4: DICIONARIO DE TRADUCAO (chaves CAD -> nomes de relatorio)
+    // ID_PAI NAO e renomeado nem exibido: fica interno, so para o self-join
+    // (evita colisao com a antiga coluna manual ORIGEM, substituida por LOCAL).
+    // ------------------------------------------------------------
+    Renomes = {{"HANDLE_CAD", "HANDLE"}, {"TAG_AUXILIAR", "EQUIPAMENTO AUX"}},
+    #"Renomeada" = Table.RenameColumns(
+        #"Purgada",
+        List.Select(Renomes, each List.Contains(Table.ColumnNames(#"Purgada"), _{0}))
     ),
 
-    DicionarioNomes = {
-        {"HANDLE CAD",          "HANDLE"},
-        {"Nome Bloco",          "NOME DO BLOCO"},
-        {"0A CATEGORIA",        "CATEGORIA"},
-        {"0B SETOR",            "SETOR"},
-        {"0C FAMILIA",          "FAMILIA"},
-        {"0D MODELO",           "MODELO"},
-        {"0E TAG",              "EQUIPAMENTO"},
-        {"0F TAG AUXILIAR",     "EQUIPAMENTO AUX"},
-        {"0G DESCRICAO GERAL",  "DESCRIÇÃO GERAL"},
-        {"0G DESCRI" & Character.FromNumber(199) & Character.FromNumber(195) & "O GERAL", "DESCRIÇÃO GERAL"},
-        {"0H ACIONAMENTO",      "ACIONAMENTO"},
-        {"0I DADOS ENGENHARIA", "DADOS ENGENHARIA"},
-        {"CAIXA DE PASSAGEM",   "CAIXA DE PASSAGEM"}
-    },
-    ColsAtuais = Table.ColumnNames(#"Atributos Redundantes Removidos"),
-    #"Colunas Renomeadas" = Table.RenameColumns(
-        #"Atributos Redundantes Removidos",
-        List.Select(DicionarioNomes, each List.Contains(ColsAtuais, _{0}))
+    // Linhas sem HANDLE nao sao blocos validos
+    #"Filtrada" = Table.SelectRows(
+        #"Renomeada",
+        each [HANDLE] <> null and Text.Trim(Text.From([HANDLE])) <> ""
     ),
 
-    // Remove colunas que nao sao usadas na tabela final (se existirem)
-    ColunasParaRemover = {"0J SENSOR", "0K TAG SIZE", "0L TAG AMOUNT", "0M NAME", "9A TAG ", "4A AUX1", "4B AUX2"},
-    #"Colunas Removidas" = Table.RemoveColumns(
-        #"Colunas Renomeadas",
-        List.Intersect({Table.ColumnNames(#"Colunas Renomeadas"), ColunasParaRemover})
-    ),
+    // ------------------------------------------------------------
+    // ETAPA 6: INDEXADOR DE LEITURA + BUFFER
+    // INDICE_LINHA = ordem de leitura do bloco (interno). O INDICE exibido
+    // (um por bloco pai) e renumerado na Etapa 9.
+    // ------------------------------------------------------------
+    #"Indexada" = Table.AddIndexColumn(#"Filtrada", "ÍNDICE_LINHA", 1, 1, Int64.Type),
+    Base = Table.Buffer(#"Indexada"),
+    TodasColunas = Table.ColumnNames(Base),
 
-    // Garante que todas as colunas base existam (null se ausente no CSV)
-    // Evita erros ao acessar Linha[CAMPO] na logica de expansao
-    ColsBase = {
-        "EQUIPAMENTO", "EQUIPAMENTO AUX", "SETOR", "FAMILIA", "CATEGORIA",
-        "DESCRIÇÃO GERAL", "ACIONAMENTO", "DADOS ENGENHARIA", "MODELO",
-        "CAIXA DE PASSAGEM", "HANDLE"
-    },
-    #"Colunas Garantidas" = List.Accumulate(
-        List.Select(ColsBase, each not List.Contains(Table.ColumnNames(#"Colunas Removidas"), _)),
-        #"Colunas Removidas",
-        (acc, col) => Table.AddColumn(acc, col, each null)
-    ),
-
-    // ---------------------------------------------------------------
-    // 3. HELPERS E INICIALIZACAO
-    // ---------------------------------------------------------------
+    // ------------------------------------------------------------
+    // ETAPAS 5 e 7: FUNCOES AUXILIARES
+    // ------------------------------------------------------------
+    // FixCase: trim -> corta do "(" em diante -> Proper Case
     FixCase = (texto) =>
         let
             t     = if texto = null then "" else Text.Trim(Text.From(texto)),
@@ -101,219 +108,152 @@ let
             limpo = if pos > 0 then Text.Start(t, pos) else t
         in Text.Proper(Text.Trim(limpo)),
 
-    // TAG inicializada (se nao existir como coluna, usa EQUIPAMENTO)
-    #"TAG Inicializada" = if List.Contains(Table.ColumnNames(#"Colunas Garantidas"), "TAG")
-        then #"Colunas Garantidas"
-        else Table.AddColumn(#"Colunas Garantidas", "TAG", each [EQUIPAMENTO], type text),
+    // GetCampo: coluna ausente OU celula null -> "" (nunca erro)
+    GetCampo = (linha as record, nomeCol as text) =>
+        if List.Contains(TodasColunas, nomeCol)
+        then (let v = Record.Field(linha, nomeCol)
+              in if v = null then "" else Text.Trim(Text.From(v)))
+        else "",
 
-    #"ÍNDICE Adicionado" = Table.AddIndexColumn(#"TAG Inicializada", "ÍNDICE", 1, 1, Int64.Type),
+    NomeLimpo = (col as text) =>
+        if Text.Contains(col, "(") then Text.Trim(Text.BeforeDelimiter(col, "(")) else col,
+    SufixoDe = (col as text) =>
+        if Text.Contains(col, "(") then Text.BetweenDelimiters(col, "(", ")") else "",
 
-    TodasColunas     = Table.ColumnNames(#"ÍNDICE Adicionado"),
-    ColunasBaseSufixo = {"TAG", "ACIONAMENTO", "DADOS ENGENHARIA", "MODELO", "EQUIPAMENTO AUX"},
+    // Atributo (tag pura) = texto apos o primeiro hifen da TAG
+    DerivarAtributo = (tag as text) =>
+        if Text.Contains(tag, "-") then Text.AfterDelimiter(tag, "-") else tag,
 
-    // ---------------------------------------------------------------
-    // 4. LOGICA DE EXPANSAO PAI/FILHO
-    //
-    // Para cada linha do CSV (= 1 bloco AutoCAD):
-    //   A) Sufixos TAG(1), TAG(A)... → cria cópia da linha pai
-    //      substituindo TAG, ACIONAMENTO, MODELO, etc. pelo valor com sufixo
-    //   B) Colunas laterais (VALVULA ABRE, SENSOR...)  → cria linhas filho
-    //      com CATEGORIA = nome da coluna e TAG = valor da celula
-    // ---------------------------------------------------------------
-    #"Linhas Geradas" = Table.AddColumn(#"ÍNDICE Adicionado", "Lista Final", each
+    // ------------------------------------------------------------
+    // LOOKUP DE PAIS: HANDLE -> {TAG do pai, INDICE_LINHA do pai}
+    // ------------------------------------------------------------
+    PaisDistintos = Table.Distinct(
+        Table.SelectColumns(Base, {"HANDLE", "TAG", "ÍNDICE_LINHA"}),
+        {"HANDLE"}),
+    ListaPais = Table.ToRecords(PaisDistintos),
+    RegPais = Record.FromList(
+        List.Transform(ListaPais, each [TAG = Text.From([TAG] ?? ""), IDX = [ÍNDICE_LINHA]]),
+        List.Transform(ListaPais, each Text.Upper(Text.Trim(Text.From([HANDLE]))))),
+    BuscarPai = (h as text) => Record.FieldOrDefault(RegPais, h, null),
+
+    // Colunas laterais = tudo que nao e base (pelo nome limpo, sem "(n)")
+    ColsLaterais = List.Select(TodasColunas, each not List.Contains(ColunasBase, NomeLimpo(_))),
+
+    // ------------------------------------------------------------
+    // ETAPA 8: MOTOR DE HIERARQUIA (linha do bloco + replicas + filhos)
+    // ------------------------------------------------------------
+    #"Linhas Geradas" = Table.AddColumn(Base, "LISTA_FINAL", each
         let
-            Linha = _,
+            L = _,
 
-            // --- Detecta colunas de sufixo: TAG(A), TAG(1), TAG(B)... ---
-            ColsTagSufixo    = List.Select(TodasColunas, each Text.StartsWith(_, "TAG(")),
-            SufixosValidos   = List.Select(ColsTagSufixo, each
-                Record.Field(Linha, _) <> null and
-                Text.From(Record.Field(Linha, _)) <> ""
-            ),
-
-            // --- Detecta colunas filho laterais ---
-            // Exclui colunas base, de identificacao e de sufixo
-            ColsFilhosLaterais = List.Select(TodasColunas, each
+            // Campo base com sobreposicao de sufixo: BASE(n) > BASE
+            GetSuf = (nomeBase as text, suf as text) =>
                 let
-                    NomeLimpo = if Text.Contains(_, "(")
-                                then Text.Trim(Text.BeforeDelimiter(_, "("))
-                                else _
-                in not List.Contains(ColunasBaseSufixo, NomeLimpo) and
-                   not List.Contains(
-                       {"EQUIPAMENTO", "SETOR", "FAMILIA", "CATEGORIA", "DESCRIÇÃO GERAL",
-                        "ÍNDICE", "CAIXA DE PASSAGEM", "ID VISIVEL", "NOME DO BLOCO",
-                        "HANDLE", "ACIONAMENTO", "MODELO", "DADOS ENGENHARIA",
-                        "EQUIPAMENTO AUX", "TAG", "ORDEM INTERNA", "SUBORDEM", "Tipo"},
-                       NomeLimpo)
-            ),
-            FilhosLateraisValidos = List.Select(ColsFilhosLaterais, each
-                Record.Field(Linha, _) <> null and
-                Text.From(Record.Field(Linha, _)) <> ""
-            ),
+                    v = if suf = "" then ""
+                        else (let a = GetCampo(L, nomeBase & "(" & suf & ")")
+                              in if a <> "" then a
+                                 else GetCampo(L, nomeBase & " (" & suf & ")"))
+                in if v <> "" then v else GetCampo(L, nomeBase),
 
-            // Lista de indices: "ORIGINAL" ou sufixos encontrados
-            IndicesSufixo = if List.IsEmpty(SufixosValidos)
-                then {"ORIGINAL"}
-                else List.Transform(SufixosValidos, each Text.BetweenDelimiters(_, "(", ")")),
+            idPai       = GetCampo(L, "ID_PAI"),
+            pai         = if idPai <> "" then BuscarPai(Text.Upper(idPai)) else null,
+            tagBase     = GetCampo(L, "TAG"),
+            equipMestre = Text.Upper(if pai <> null then DerivarAtributo(pai[TAG])
+                                     else DerivarAtributo(tagBase)),
+            idxGrupo    = if pai <> null then pai[IDX] else L[ÍNDICE_LINHA],
 
-            // --- BLOCO A: LINHAS PAI (uma por sufixo ou a linha original) ---
-            ReplicasPai = List.Transform(IndicesSufixo, (idx) =>
-                let
-                    s = if idx = "ORIGINAL" then "" else "(" & idx & ")",
+            // Fabrica de registro: 20 colunas fixas + controle interno
+            Registro = (categoria as text, tagLinha as text, suf as text, herdaTec as logical) =>
+                [
+                    ÍNDICE_LINHA         = L[ÍNDICE_LINHA],
+                    ÍNDICE_GRUPO         = idxGrupo,
+                    HANDLE               = GetCampo(L, "HANDLE"),
+                    LOCAL                = GetCampo(L, "LOCAL"),
+                    EQUIPAMENTO          = equipMestre,
+                    ATRIBUTO             = Text.Upper(DerivarAtributo(tagLinha)),
+                    TAG                  = Text.Upper(tagLinha),
+                    #"EQUIPAMENTO AUX"   = Text.Upper(GetSuf("EQUIPAMENTO AUX", suf)),
+                    SETOR                = GetCampo(L, "SETOR"),
+                    FAMILIA              = FixCase(GetCampo(L, "FAMILIA")),
+                    CATEGORIA            = FixCase(categoria),
+                    MODELO               = if herdaTec then FixCase(GetSuf("MODELO", suf)) else "",
+                    #"DESCRIÇÃO GERAL"   = FixCase(categoria) & " | " &
+                                           FixCase(GetCampo(L, "FAMILIA")) & " " &
+                                           Text.Upper(tagLinha),
+                    ACIONAMENTO          = if herdaTec then FixCase(GetSuf("ACIONAMENTO", suf)) else "",
+                    INTERFACE            = null,
+                    POTÊNCIA             = if herdaTec then GetSuf("POTÊNCIA", suf) else "",
+                    CORRENTE             = if herdaTec then GetSuf("CORRENTE", suf) else "",
+                    TENSÃO               = if herdaTec then GetSuf("TENSÃO", suf) else "",
+                    CAPACIDADE           = if herdaTec then GetSuf("CAPACIDADE", suf) else "",
+                    #"CAIXA DE PASSAGEM" = FixCase(GetCampo(L, "CAIXA_DE_PASSAGEM")),
+                    CONEXÃO              = null,
+                    SUBORDEM             = suf
+                ],
 
-                    // Busca o valor da coluna com sufixo;
-                    // se nao encontrar, retorna o valor original
-                    GetAtributo = (nomeBase, original) =>
-                        let
-                            c1       = nomeBase & s,
-                            c2       = nomeBase & " " & s,
-                            valSufixo =
-                                if idx = "ORIGINAL" then original
-                                else if List.Contains(TodasColunas, c1) then Record.Field(Linha, c1)
-                                else if List.Contains(TodasColunas, c2) then Record.Field(Linha, c2)
-                                else null
-                        in if valSufixo <> null and valSufixo <> "" then valSufixo else original,
+            // 1) Linha do proprio bloco (pai ou filho via ID_PAI)
+            LinhaBloco =
+                if tagBase <> "" or GetCampo(L, "CATEGORIA") <> ""
+                then { Registro(GetCampo(L, "CATEGORIA"), tagBase, "", true) }
+                else {},
 
-                    CategoriaDinamica = GetAtributo("CATEGORIA", Linha[CATEGORIA]),
-                    DescPai     = FixCase(CategoriaDinamica) & " | " &
-                                  FixCase(Linha[FAMILIA]) & " " &
-                                  Text.Upper(Text.Trim(Text.From(Linha[EQUIPAMENTO] ?? ""))),
-                    PossuiExtras = List.Count(SufixosValidos) > 0 or List.Count(FilhosLateraisValidos) > 0,
-                    EhMotorPai   = Text.Contains(Text.Upper(Text.From(CategoriaDinamica ?? "")), "MOTOR"),
-                    TipoResultado = if idx = "ORIGINAL" and PossuiExtras and not EhMotorPai
-                                    then "Excluir" else "Manter"
-                in [
-                    ÍNDICE              = Linha[ÍNDICE],
-                    HANDLE              = Linha[HANDLE],
-                    EQUIPAMENTO         = Text.Upper(Text.From(Linha[EQUIPAMENTO])),
-                    #"EQUIPAMENTO AUX"  = Text.Upper(Text.From(GetAtributo("EQUIPAMENTO AUX", Linha[#"EQUIPAMENTO AUX"]) ?? "")),
-                    SETOR               = Linha[SETOR],
-                    FAMILIA             = Linha[FAMILIA],
-                    CATEGORIA           = CategoriaDinamica,
-                    TAG                 = Text.Upper(Text.From(GetAtributo("TAG", Linha[TAG]))),
-                    #"DESCRIÇÃO GERAL"  = DescPai,
-                    ACIONAMENTO         = GetAtributo("ACIONAMENTO", Linha[ACIONAMENTO]),
-                    #"DADOS ENGENHARIA" = GetAtributo("DADOS ENGENHARIA", Linha[#"DADOS ENGENHARIA"]),
-                    MODELO              = GetAtributo("MODELO", Linha[MODELO]),
-                    #"CAIXA DE PASSAGEM" = Linha[#"CAIXA DE PASSAGEM"],
-                    ORDEM_INTERNA       = 0,
-                    SUBORDEM            = if idx = "ORIGINAL" then "" else idx,
-                    Tipo                = TipoResultado
-                ]
-            ),
+            // 2) Replicas de sufixo: uma por TAG(n) preenchida; herda tudo e
+            //    sobrepoe CATEGORIA(n)/MODELO(n)/ACIONAMENTO(n)/eletrica(n)
+            SufsTag = List.Select(
+                List.Transform(
+                    List.Select(TodasColunas, each Text.StartsWith(_, "TAG(")),
+                    each SufixoDe(_)),
+                each GetCampo(L, "TAG(" & _ & ")") <> ""),
+            Replicas = List.Transform(SufsTag, (n) =>
+                Registro(GetSuf("CATEGORIA", n), GetCampo(L, "TAG(" & n & ")"), n, true)),
 
-            // --- BLOCO B: LINHAS FILHO (colunas laterais) ---
-            Filhos = List.Transform(ColsFilhosLaterais, (col) =>
-                let
-                    val         = Record.Field(Linha, col),
-                    colUpper    = Text.Upper(col),
-                    EhValvula   = Text.Contains(colUpper, "VALVULA") or
-                                  Text.Contains(colUpper, "VÁLVULA"),
-                    NomeCatFilho = if Text.Contains(col, "(")
-                                   then Text.Trim(Text.BeforeDelimiter(col, "("))
-                                   else col,
-                    IdxFilho    = if Text.Contains(col, "(")
-                                  then Text.BetweenDelimiters(col, "(", ")")
-                                  else "",
-                    DescFilho   = FixCase(NomeCatFilho) & " | " &
-                                  FixCase(Linha[FAMILIA]) & " " &
-                                  Text.Upper(Text.Trim(Text.From(Linha[EQUIPAMENTO] ?? "")))
-                in if val <> null and Text.Trim(Text.From(val)) <> "" then [
-                    ÍNDICE              = Linha[ÍNDICE],
-                    HANDLE              = Linha[HANDLE],
-                    EQUIPAMENTO         = Text.Upper(Text.From(Linha[EQUIPAMENTO])),
-                    #"EQUIPAMENTO AUX"  = Text.Upper(Text.From(Linha[#"EQUIPAMENTO AUX"] ?? "")),
-                    SETOR               = Linha[SETOR],
-                    FAMILIA             = Linha[FAMILIA],
-                    CATEGORIA           = NomeCatFilho,
-                    TAG                 = Text.Upper(Text.From(val)),
-                    #"DESCRIÇÃO GERAL"  = DescFilho,
-                    ACIONAMENTO         = if EhValvula then Linha[ACIONAMENTO] else null,
-                    #"DADOS ENGENHARIA" = if EhValvula then Linha[#"DADOS ENGENHARIA"] else null,
-                    MODELO              = if EhValvula then Linha[MODELO] else null,
-                    #"CAIXA DE PASSAGEM" = Linha[#"CAIXA DE PASSAGEM"],
-                    ORDEM_INTERNA       = 1,
-                    SUBORDEM            = IdxFilho,
-                    Tipo                = "Manter"
-                ] else null
-            ),
+            // 3) Filhos laterais: coluna nao-base preenchida
+            //    CATEGORIA = nome da coluna; TAG = valor da celula
+            //    herdaTec so para VAVULA/VALVULA
+            Laterais = List.Transform(
+                List.Select(ColsLaterais, each GetCampo(L, _) <> ""),
+                (col) =>
+                    let
+                        nm     = NomeLimpo(col),
+                        n      = SufixoDe(col),
+                        nmUp   = Text.Upper(nm),
+                        ehValv = Text.Contains(nmUp, "VÁVULA") or
+                                 Text.Contains(nmUp, "VÁLVULA") or
+                                 Text.Contains(nmUp, "VALVULA")
+                    in Registro(Text.Replace(nm, "_", " "), GetCampo(L, col), n, ehValv))
+        in
+            LinhaBloco & Replicas & Laterais),
 
-            Result = List.Select(ReplicasPai & Filhos, each _ <> null)
-        in Result
-    ),
-
-    // ---------------------------------------------------------------
-    // 5. EXPANSAO E FILTRO
-    // ---------------------------------------------------------------
     #"Tabela Expandida" = Table.FromRecords(
-        List.Combine(Table.Column(#"Linhas Geradas", "Lista Final"))
-    ),
-    #"Filtro Manter" = Table.SelectRows(#"Tabela Expandida", each ([Tipo] = "Manter")),
+        List.Combine(Table.Column(#"Linhas Geradas", "LISTA_FINAL"))),
 
-    // ---------------------------------------------------------------
-    // 6. DADOS ENGENHARIA -> POTÊNCIA / CORRENTE / TENSÃO
-    // ---------------------------------------------------------------
-    #"Engenharia Dividida" = Table.AddColumn(#"Filtro Manter", "EngSplit", each
-        let
-            texto  = Text.From([#"DADOS ENGENHARIA"] ?? ""),
-            partes = Text.Split(texto, "/"),
-            valido = List.Count(partes) >= 3
-        in if texto = "" or texto = "//"
-           then [P="--", C="--", T="--"]
-           else if valido
-           then [P=partes{0}, C=partes{1}, T=partes{2}]
-           else [P=texto,     C="--",       T="--"]
-    ),
-    #"Colunas Engenharia" = Table.ExpandRecordColumn(
-        #"Engenharia Dividida", "EngSplit",
-        {"P", "C", "T"}, {"POTÊNCIA", "CORRENTE", "TENSÃO"}
-    ),
-
-    // ---------------------------------------------------------------
-    // 7. TRATAMENTO DE TEXTO
-    // ---------------------------------------------------------------
-    ColsTratamento  = {"CATEGORIA", "SETOR", "FAMILIA", "ACIONAMENTO", "MODELO", "CAIXA DE PASSAGEM"},
-    ColsParaTratar  = List.Intersect({Table.ColumnNames(#"Colunas Engenharia"), ColsTratamento}),
-    #"Tratamento Texto" = Table.TransformColumns(
-        #"Colunas Engenharia",
-        List.Transform(ColsParaTratar, each {_, each FixCase(_)})
-    ),
-
-    // ---------------------------------------------------------------
-    // 8. COLUNAS MANUAIS (Excel-only: preenchidas pelo usuario)
-    // ---------------------------------------------------------------
-    #"Colunas Extras" = Table.AddColumn(
-        Table.AddColumn(
-            Table.AddColumn(#"Tratamento Texto", "INTERFACE", each null),
-            "CONEXÃO", each null
-        ),
-        "ORIGEM", each null
-    ),
-
-    // ---------------------------------------------------------------
-    // 9. ORDENACAO
-    // ---------------------------------------------------------------
-    #"Peso Temporario" = Table.AddColumn(#"Colunas Extras", "Peso",
-        each if Text.Contains(Text.Upper(Text.From([CATEGORIA] ?? "")), "MOTOR") then 0 else 1
-    ),
-    #"Ordenado" = Table.Sort(#"Peso Temporario", {
-        {"ÍNDICE",    Order.Ascending},
-        {"Peso",      Order.Ascending},
-        {"CATEGORIA", Order.Ascending},
-        {"SUBORDEM",  Order.Ascending}
+    // ------------------------------------------------------------
+    // ETAPA 9: ORDENACAO + INDICE UNICO POR BLOCO
+    // ------------------------------------------------------------
+    #"Peso Adicionado" = Table.AddColumn(#"Tabela Expandida", "PESO",
+        each if Text.Contains(Text.Upper(Text.From([CATEGORIA] ?? "")), "MOTOR") then 0 else 1),
+    #"Ordenado" = Table.Sort(#"Peso Adicionado", {
+        {"ÍNDICE_GRUPO", Order.Ascending},
+        {"PESO",         Order.Ascending},
+        {"ÍNDICE_LINHA", Order.Ascending},
+        {"CATEGORIA",    Order.Ascending},
+        {"SUBORDEM",     Order.Ascending}
     }),
 
-    // ---------------------------------------------------------------
-    // 10. SELECAO FINAL — mesma estrutura da versao com DATAEXTRACTION
-    // ---------------------------------------------------------------
-    ColsFinais = {
-        "ÍNDICE", "HANDLE", "EQUIPAMENTO", "EQUIPAMENTO AUX", "SETOR", "FAMILIA",
-        "CATEGORIA", "TAG", "DESCRIÇÃO GERAL", "ACIONAMENTO", "INTERFACE",
-        "POTÊNCIA", "CORRENTE", "TENSÃO", "MODELO", "CAIXA DE PASSAGEM", "CONEXÃO", "ORIGEM"
-    },
-    #"Seleção Final" = Table.SelectColumns(
-        #"Ordenado",
-        List.Intersect({ColsFinais, Table.ColumnNames(#"Ordenado")})
-    )
+    // Renumera o INDICE: um numero sequencial POR BLOCO (pai + filhas juntos)
+    GruposOrdenados = List.Buffer(List.Distinct(Table.Column(#"Ordenado", "ÍNDICE_GRUPO"))),
+    #"Índice Por Bloco" = Table.AddColumn(#"Ordenado", "ÍNDICE",
+        each List.PositionOf(GruposOrdenados, [ÍNDICE_GRUPO]) + 1, Int64.Type),
+
+    // ------------------------------------------------------------
+    // ETAPA 10: CARGA FINAL — 20 COLUNAS FIXAS DO GABARITO
+    // ------------------------------------------------------------
+    #"Seleção Final" = Table.SelectColumns(#"Índice Por Bloco", {
+        "ÍNDICE", "HANDLE", "LOCAL", "EQUIPAMENTO", "ATRIBUTO", "TAG",
+        "EQUIPAMENTO AUX", "SETOR", "FAMILIA", "CATEGORIA", "MODELO",
+        "DESCRIÇÃO GERAL", "ACIONAMENTO", "INTERFACE", "POTÊNCIA", "CORRENTE",
+        "TENSÃO", "CAPACIDADE", "CAIXA DE PASSAGEM", "CONEXÃO"
+    })
 in
     #"Seleção Final"
+</content>

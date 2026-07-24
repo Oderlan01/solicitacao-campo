@@ -44,27 +44,57 @@ Via alternativa de ingestão (legado): AutoCAD **DATAEXTRACTION** ("export dados
   laterais). Logo **não é 1:1 com HANDLE**: a gravação de volta usa só a **linha-pai** por
   HANDLE (1ª ocorrência), como o VBA já faz via `handlesVistos`.
 
-## Dicionário Canônico de Variáveis
+## Dicionário Canônico de Variáveis (LAYOUT v2 — CSV sem prefixo)
 
-Dicionário canônico (referência única para LISP/PQ/VBA). Direção: **RW** = round-trip (edita no Excel e
-grava no CAD) · **R** = somente leitura/derivado · **CTRL** = interno/identidade.
+O CSV v2 usa nomes de atributo DIRETOS (sem prefixo `0A_`). Direção: **RW** = round-trip
+(edita no Excel e grava no CAD) · **R** = somente leitura/derivado · **CTRL** = interno.
 
-### Grupo NÚCLEO (Bloco CAD)
+### Grupo NÚCLEO (colunas base do bloco CAD — v2)
 
-| Atributo CAD          | Nome amigável     | Direção | Observação                          |
-|-----------------------|-------------------|---------|-------------------------------------|
-| `0A_CATEGORIA`        | CATEGORIA         | RW      | dispara domínio de ACIONAMENTO      |
-| `0B_SETOR`            | SETOR             | RW      |                                     |
-| `0C_FAMILIA`          | FAMILIA           | RW      |                                     |
-| `0D_MODELO`           | MODELO            | RW      |                                     |
-| `0E_TAG`              | EQUIPAMENTO       | RW      | base da coluna TAG (expansão)       |
-| `0F_TAG_AUXILIAR`     | EQUIPAMENTO AUX   | RW      |                                     |
-| `0G_DESCRICAO_GERAL`  | DESCRICAO GERAL   | R       | composta no PQ (não regravar)       |
-| `0H_ACIONAMENTO`      | ACIONAMENTO       | RW      | dropdown (domínio depende CATEGORIA)|
-| `0I_DADOS_ENGENHARIA` | DADOS ENGENHARIA  | R       | split em POTÊNCIA/CORRENTE/TENSÃO   |
-| `0J_SENSOR`           | SENSOR            | RW      |                                     |
-| `CAIXA_DE_PASSAGEM`   | CAIXA DE PASSAGEM | RW      |                                     |
-| `VALVULA_ABRE`        | VALVULA ABRE      | RW      | gera linha filho no PQ              |
+| Atributo CAD (CSV)  | Coluna no relatório | Direção | Observação                            |
+|---------------------|---------------------|---------|---------------------------------------|
+| `HANDLE_CAD`        | HANDLE              | CTRL    | chave primária (posição 2)            |
+| `ID_PAI`            | (interno)           | CTRL    | HANDLE do bloco pai; só p/ self-join  |
+| `LOCAL`             | LOCAL               | RW      | nuvem/revisão; ≠ SETOR (posição 3)    |
+| `TAG`               | TAG                 | RW      | vem PRONTA do LISP (não concatenar)   |
+| `TAG_AUXILIAR`      | EQUIPAMENTO AUX     | RW      |                                       |
+| `SETOR`             | SETOR               | RW      | processo; ≠ LOCAL                     |
+| `FAMILIA`           | FAMILIA             | RW      |                                       |
+| `CATEGORIA`         | CATEGORIA           | RW      | atributo próprio de cada bloco        |
+| `MODELO`            | MODELO              | RW      | exibido logo após CATEGORIA           |
+| `ACIONAMENTO`       | ACIONAMENTO         | RW      | dropdown (domínio depende CATEGORIA)  |
+| `POTÊNCIA`          | POTÊNCIA            | RW      | coluna base (sem split de `/`)        |
+| `CORRENTE`          | CORRENTE            | RW      | coluna base                           |
+| `TENSÃO`            | TENSÃO              | RW      | coluna base                           |
+| `CAPACIDADE`        | CAPACIDADE          | RW      | coluna base                           |
+| `CAIXA_DE_PASSAGEM` | CAIXA DE PASSAGEM   | RW      |                                       |
+| — (derivadas no PQ) | EQUIPAMENTO / ATRIBUTO / DESCRIÇÃO GERAL / ÍNDICE | R | ver hierarquia abaixo |
+
+### Hierarquia v2 (resolvida no Power Query — `power-query-csv.m`)
+
+- **Blocos pai e filho** são linhas separadas do CSV, cada uma com HANDLE; o filho aponta o
+  pai por `ID_PAI`. **EQUIPAMENTO** (tag mestre do grupo) vem do pai via self-join;
+  **ATRIBUTO** (tag pura) = TAG após o primeiro hífen (`MTE-RO-100` → `RO-100`).
+- **Sufixo `(n)` em colunas base** (`TAG(2)`, `MODELO(2)`, `CORRENTE(2)`…): réplica da linha
+  que herda tudo e sobrepõe os campos `(n)`; `SUBORDEM = n`.
+- **Colunas não-base preenchidas** (`SENSOR_*`, `VÁVULA_*`, `CÉLULA_DE_CARGA(n)`…): linha
+  filha com CATEGORIA = nome da coluna e TAG = valor; herda contexto (LOCAL/SETOR/FAMILIA/
+  CAIXA); campos técnicos só se o nome contiver VÁVULA/VALVULA.
+- **ÍNDICE: um por bloco** — pai e todas as filhas compartilham o mesmo número, renumerado
+  sequencialmente após a ordenação (ÍNDICE_GRUPO → PESO motor=0 → leitura → CATEGORIA →
+  SUBORDEM).
+- **Colunas auxiliares do AutoCAD** (`2TAG_`, AUTOR, DATA, NUM_*, …): lista `ColunasExcluir`
+  configurável no topo da query.
+- Saída: **20 colunas fixas** — ÍNDICE, HANDLE, LOCAL, EQUIPAMENTO, ATRIBUTO, TAG,
+  EQUIPAMENTO AUX, SETOR, FAMILIA, CATEGORIA, MODELO, DESCRIÇÃO GERAL, ACIONAMENTO,
+  INTERFACE, POTÊNCIA, CORRENTE, TENSÃO, CAPACIDADE, CAIXA DE PASSAGEM, CONEXÃO.
+
+### Layout v1 (legado, prefixos `0A_…`) — mantido só para referência histórica
+
+`0A_CATEGORIA→CATEGORIA`, `0B_SETOR→SETOR`, `0C_FAMILIA→FAMILIA`, `0D_MODELO→MODELO`,
+`0E_TAG→EQUIPAMENTO`, `0F_TAG_AUXILIAR→EQUIPAMENTO AUX`, `0G_DESCRICAO_GERAL` (derivada),
+`0I_DADOS_ENGENHARIA` (split P/C/T — extinto na v2), `0J_SENSOR`, `CAIXA_DE_PASSAGEM`,
+`VALVULA_ABRE`.
 
 ### Grupo MES3 (etiqueta — aba/query própria)
 

@@ -16,23 +16,27 @@ Option Explicit
 
 ' --- Mapeamento central bidirecional ---
 ' Chave = nome da coluna na Tabela_Componentes (Excel)
-' Valor = nome do atributo no bloco AutoCAD (= coluna no CSV)
+' Valor = nome do atributo no bloco AutoCAD (= coluna no CSV v2, sem prefixo)
 Function ObterMapa() As Object
     Dim m As Object
     Set m = CreateObject("Scripting.Dictionary")
     ' Apenas campos RW (round-trip). Alinhado ao dicionario em FLUXO_DADOS.md.
-    ' DESCRICAO GERAL e DADOS ENGENHARIA sao derivados (R) e NAO entram aqui,
-    ' para nao corromper o bloco na volta ao CAD.
-    m.Add "CATEGORIA",         "0A_CATEGORIA"
-    m.Add "SETOR",             "0B_SETOR"
-    m.Add "FAMILIA",           "0C_FAMILIA"
-    m.Add "MODELO",            "0D_MODELO"
-    m.Add "TAG",               "0E_TAG"
-    m.Add "EQUIPAMENTO AUX",   "0F_TAG_AUXILIAR"
-    m.Add "ACIONAMENTO",       "0H_ACIONAMENTO"
-    m.Add "SENSOR",            "0J_SENSOR"
+    ' Derivados NAO entram (nao regravar no CAD): EQUIPAMENTO, ATRIBUTO,
+    ' DESCRICAO GERAL, INDICE. A gravacao usa a 1a linha de cada HANDLE
+    ' (linha do proprio bloco), demais linhas do grupo sao ignoradas.
+    m.Add "LOCAL",             "LOCAL"
+    m.Add "TAG",               "TAG"
+    m.Add "EQUIPAMENTO AUX",   "TAG_AUXILIAR"
+    m.Add "SETOR",             "SETOR"
+    m.Add "FAMILIA",           "FAMILIA"
+    m.Add "CATEGORIA",         "CATEGORIA"
+    m.Add "MODELO",            "MODELO"
+    m.Add "ACIONAMENTO",       "ACIONAMENTO"
+    m.Add "POTÊNCIA",          "POTÊNCIA"
+    m.Add "CORRENTE",          "CORRENTE"
+    m.Add "TENSÃO",            "TENSÃO"
+    m.Add "CAPACIDADE",        "CAPACIDADE"
     m.Add "CAIXA DE PASSAGEM", "CAIXA_DE_PASSAGEM"
-    m.Add "VALVULA ABRE",      "VALVULA_ABRE"
     Set ObterMapa = m
 End Function
 
